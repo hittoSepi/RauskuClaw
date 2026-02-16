@@ -1,0 +1,46 @@
+services:
+  openclaw-api:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: openclaw-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - DB_PATH=${DB_PATH:-/data/openclaw.sqlite}
+      - DEPLOY_TARGET_ALLOWLIST=${DEPLOY_TARGET_ALLOWLIST:-staging}
+      - CALLBACK_ALLOWLIST=${CALLBACK_ALLOWLIST:-}
+    volumes:
+      - ./data:/data
+    ports:
+      # API only on localhost (host Nginx exposes it)
+      - "127.0.0.1:3001:3001"
+    command: ["node", "server.js"]
+
+  openclaw-worker:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: openclaw-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - DB_PATH=${DB_PATH:-/data/openclaw.sqlite}
+      - WORKER_POLL_MS=${WORKER_POLL_MS:-300}
+      - DEPLOY_TARGET_ALLOWLIST=${DEPLOY_TARGET_ALLOWLIST:-staging}
+      - CALLBACK_ALLOWLIST=${CALLBACK_ALLOWLIST:-}
+    volumes:
+      - ./data:/data
+    command: ["node", "worker-only.js"]
+
+  openclaw-ui:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+    container_name: openclaw-ui
+    restart: unless-stopped
+    ports:
+      # UI on localhost, host Nginx maps /ui/ to this
+      - "127.0.0.1:3002:8080"
