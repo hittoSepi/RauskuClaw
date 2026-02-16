@@ -43,6 +43,14 @@ async function request(path, { method = "GET", body, headers = {} } = {}) {
 export const api = {
   ping: () => request("/v1/ping"),
   jobTypes: () => request("/v1/job-types"),
+  updateJobType: (name, payload) => request(`/v1/job-types/${encodeURIComponent(name)}`, {
+    method: "PATCH",
+    body: payload
+  }),
+  createJobType: (payload) => request("/v1/job-types", {
+    method: "POST",
+    body: payload
+  }),
   jobs: (params = {}) => {
     const qs = new URLSearchParams(params).toString();
     return request("/v1/jobs" + (qs ? `?${qs}` : ""));

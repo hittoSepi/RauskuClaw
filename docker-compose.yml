@@ -8,11 +8,13 @@ services:
     env_file:
       - .env
     environment:
+      - RAUSKUCLAW_CONFIG_PATH=${RAUSKUCLAW_CONFIG_PATH:-/config/rauskuclaw.json}
       - DB_PATH=${DB_PATH:-/data/openclaw.sqlite}
       - DEPLOY_TARGET_ALLOWLIST=${DEPLOY_TARGET_ALLOWLIST:-staging}
       - CALLBACK_ALLOWLIST=${CALLBACK_ALLOWLIST:-}
     volumes:
       - ./data:/data
+      - ./rauskuclaw.json:/config/rauskuclaw.json:ro
     ports:
       # API only on localhost (host Nginx exposes it)
       - "127.0.0.1:3001:3001"
@@ -27,12 +29,14 @@ services:
     env_file:
       - .env
     environment:
+      - RAUSKUCLAW_CONFIG_PATH=${RAUSKUCLAW_CONFIG_PATH:-/config/rauskuclaw.json}
       - DB_PATH=${DB_PATH:-/data/openclaw.sqlite}
       - WORKER_POLL_MS=${WORKER_POLL_MS:-300}
       - DEPLOY_TARGET_ALLOWLIST=${DEPLOY_TARGET_ALLOWLIST:-staging}
       - CALLBACK_ALLOWLIST=${CALLBACK_ALLOWLIST:-}
     volumes:
       - ./data:/data
+      - ./rauskuclaw.json:/config/rauskuclaw.json:ro
     command: ["node", "worker-only.js"]
 
   openclaw-ui:

@@ -59,10 +59,24 @@
     </div>
 
     <div class="row" style="margin-top: 12px">
-      <button class="btn primary" @click="submit" :disabled="submitting">
+      <button class="btn primary" @click="submit" :disabled="submitting || !canSubmit">
         {{ submitting ? "Creating..." : "Create job" }}
       </button>
       <span style="color: var(--muted); font-size: 13px">Creates with `/v1/jobs`</span>
+    </div>
+
+    <div v-if="statusMsg" style="margin-top: 10px; color: #7ee787; font-size: 13px">
+      {{ statusMsg }}
+    </div>
+
+    <div style="margin-top: 8px; color: var(--muted); font-size: 12px">
+      {{ loadingTypes ? "Loading job types..." : `Enabled types: ${enabledTypes.length}` }}
+      <span v-if="lastActionAt"> | last action: {{ lastActionAt }}</span>
+    </div>
+
+    <div v-if="validationErrors.length" style="margin-top: 10px; color: #ff7b72; font-size: 13px">
+      <div style="font-weight: 700; margin-bottom: 4px">Fix before submit:</div>
+      <div v-for="(v, i) in validationErrors" :key="i">- {{ v }}</div>
     </div>
 
     <div v-if="err" style="margin-top: 12px; color: #ff7b72">{{ err }}</div>
@@ -85,7 +99,9 @@ const types = ref([]);
 const loadingTypes = ref(false);
 const submitting = ref(false);
 const err = ref("");
+const statusMsg = ref("");
 const createdJob = ref(null);
+const lastActionAt = ref("");
 
 const form = ref({
   type: "",
@@ -100,9 +116,51 @@ const form = ref({
 
 const enabledTypes = computed(() => (types.value || []).filter(t => t.enabled));
 
+function parseInputJsonSafe(text) {
+  const raw = (text || "").trim();
+  if (!raw) return { ok: true, value: null };
+  try {
+    return { ok: true, value: JSON.parse(raw) };
+  } catch {
+    return { ok: false, error: "Input JSON is invalid" };
+  }
+}
+
+function isValidHttpUrl(s) {
+  if (!s) return true;
+  try {
+    const u = new URL(s);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+const validationErrors = computed(() => {
+  const out = [];
+  const p = Number(form.value.priority);
+  const t = Number(form.value.timeout_sec);
+  const a = Number(form.value.max_attempts);
+  const callback = (form.value.callback_url || "").trim();
+
+  if (!form.value.type) out.push("Job type is required.");
+  if (!Number.isInteger(p) || p < 0 || p > 10) out.push("Priority must be an integer between 0 and 10.");
+  if (!Number.isInteger(t) || t < 1 || t > 3600) out.push("Timeout must be an integer between 1 and 3600.");
+  if (!Number.isInteger(a) || a < 1 || a > 10) out.push("Max attempts must be an integer between 1 and 10.");
+  if (!isValidHttpUrl(callback)) out.push("Callback URL must start with http:// or https://");
+
+  const parsed = parseInputJsonSafe(form.value.inputText);
+  if (!parsed.ok) out.push(parsed.error);
+
+  return out;
+});
+
+const canSubmit = computed(() => validationErrors.value.length === 0 && !loadingTypes.value);
+
 async function loadTypes() {
   loadingTypes.value = true;
   err.value = "";
+  statusMsg.value = "";
   try {
     const r = await api.jobTypes();
     types.value = r.types || [];
@@ -110,17 +168,12 @@ async function loadTypes() {
       const first = (r.types || []).find(t => t.enabled);
       if (first) form.value.type = first.name;
     }
+    lastActionAt.value = new Date().toLocaleTimeString();
   } catch (e) {
     err.value = e.message || String(e);
   } finally {
     loadingTypes.value = false;
   }
-}
-
-function parseInputJson(text) {
-  const raw = (text || "").trim();
-  if (!raw) return null;
-  return JSON.parse(raw);
 }
 
 function parseTags(text) {
@@ -139,24 +192,23 @@ function makeIdempotencyKey() {
 
 async function submit() {
   err.value = "";
+  statusMsg.value = "";
   createdJob.value = null;
 
-  if (!form.value.type) {
-    err.value = "Please select a job type";
+  if (validationErrors.value.length) {
+    err.value = validationErrors.value[0];
     return;
   }
 
-  let input;
-  try {
-    input = parseInputJson(form.value.inputText);
-  } catch {
-    err.value = "Input JSON is invalid";
+  const parsedInput = parseInputJsonSafe(form.value.inputText);
+  if (!parsedInput.ok) {
+    err.value = parsedInput.error;
     return;
   }
 
   const payload = {
     type: form.value.type,
-    input,
+    input: parsedInput.value,
     priority: Number(form.value.priority),
     timeout_sec: Number(form.value.timeout_sec),
     max_attempts: Number(form.value.max_attempts),
@@ -171,6 +223,8 @@ async function submit() {
     const r = await api.createJob(payload, { idempotencyKey });
     createdJob.value = r.job || null;
     form.value.idempotencyKey = idempotencyKey;
+    statusMsg.value = `Job created successfully${createdJob.value?.id ? ` (${createdJob.value.id})` : ""}.`;
+    lastActionAt.value = new Date().toLocaleTimeString();
   } catch (e) {
     err.value = e.message || String(e);
   } finally {

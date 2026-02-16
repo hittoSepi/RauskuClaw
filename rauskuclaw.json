@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "service": {
+    "name": "rauskuclaw",
+    "environment": "production"
+  },
+  "api": {
+    "port": 3001,
+    "auth": {
+      "header": "x-api-key",
+      "required": true,
+      "allow_without_key_when": {
+        "env": "API_AUTH_DISABLED",
+        "equals": "1"
+      }
+    },
+    "sse": {
+      "route": "/v1/jobs/:id/stream",
+      "query_api_key_param": "api_key"
+    }
+  },
+  "worker": {
+    "poll_interval_ms": 300,
+    "worker_id_source": {
+      "env": "WORKER_ID",
+      "fallback": "hostname"
+    },
+    "job_defaults": {
+      "priority": 5,
+      "timeout_sec": 120,
+      "max_attempts": 1
+    }
+  },
+  "database": {
+    "engine": "sqlite",
+    "path": "/data/openclaw.sqlite",
+    "mode": "wal"
+  },
+  "callbacks": {
+    "enabled": true,
+    "allowlist_env": "CALLBACK_ALLOWLIST",
+    "allowlist_behavior_when_empty": "allow_all"
+  },
+  "handlers": {
+    "deploy": {
+      "allowlist_env": "DEPLOY_TARGET_ALLOWLIST",
+      "default_allowed_targets": [
+        "staging"
+      ]
+    }
+  },
+  "ui": {
+    "mount_path": "/ui/",
+    "container_port": 8080,
+    "host_port": 3002
+  },
+  "runtime": {
+    "api_container": "openclaw-api",
+    "worker_container": "openclaw-worker",
+    "ui_container": "openclaw-ui",
+    "compose_file": "docker-compose.yml"
+  },
+  "env_mapping": {
+    "PORT": "api.port",
+    "API_KEY": "api.auth",
+    "API_AUTH_DISABLED": "api.auth.allow_without_key_when",
+    "DB_PATH": "database.path",
+    "WORKER_POLL_MS": "worker.poll_interval_ms",
+    "DEPLOY_TARGET_ALLOWLIST": "handlers.deploy.allowlist_env",
+    "CALLBACK_ALLOWLIST": "callbacks.allowlist_env"
+  }
+}

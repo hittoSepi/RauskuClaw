@@ -8,6 +8,8 @@
     "start": "node server.js"
   },
   "dependencies": {
+    "ajv": "^8.18.0",
+    "ajv-formats": "^3.0.1",
     "better-sqlite3": "^11.7.0",
     "express": "^4.19.2",
     "morgan": "^1.10.0"

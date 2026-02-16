@@ -18,7 +18,8 @@
         <option v-for="t in typeNames" :key="t" :value="t">{{ t }}</option>
       </select>
 
-      <button class="btn" @click="load">Refresh</button>
+      <button class="btn" @click="clearFilters" :disabled="loading || (!status && !type)">Clear filters</button>
+      <button class="btn" @click="load" :disabled="loading">{{ loading ? "Refreshing..." : "Refresh" }}</button>
     </div>
 
     <table class="table">
@@ -46,10 +47,16 @@
           </td>
         </tr>
         <tr v-if="jobs.length === 0">
-          <td colspan="6" style="color: var(--muted)">No jobs found.</td>
+          <td colspan="6" style="color: var(--muted)">
+            {{ status || type ? "No jobs found with current filters." : "No jobs found." }}
+          </td>
         </tr>
       </tbody>
     </table>
+
+    <div style="margin-top: 10px; color: var(--muted); font-size: 13px">
+      {{ loading ? "Loading jobs..." : `Loaded ${jobs.length} jobs` }}
+    </div>
 
     <div v-if="err" style="margin-top: 12px; color: #ff7b72">
       {{ err }}
@@ -58,7 +65,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import { api } from "../api.js";
 
 const status = ref("");
@@ -66,6 +73,9 @@ const type = ref("");
 const jobs = ref([]);
 const types = ref([]);
 const err = ref("");
+const loading = ref(false);
+let lastLoadId = 0;
+let filterTimer = null;
 
 const typeNames = computed(() => types.value.map(t => t.name));
 
@@ -77,20 +87,47 @@ function badgeClass(s) {
 }
 
 async function load() {
+  const loadId = ++lastLoadId;
+  loading.value = true;
   err.value = "";
   try {
-    const t = await api.jobTypes();
+    const [t, r] = await Promise.all([
+      api.jobTypes(),
+      api.jobs({
+        status: status.value || undefined,
+        type: type.value || undefined,
+        limit: 100
+      })
+    ]);
+    if (loadId !== lastLoadId) return;
     types.value = t.types || [];
-    const r = await api.jobs({
-      status: status.value || undefined,
-      type: type.value || undefined,
-      limit: 100
-    });
     jobs.value = r.jobs || [];
   } catch (e) {
+    if (loadId !== lastLoadId) return;
     err.value = e.message || String(e);
+  } finally {
+    if (loadId === lastLoadId) loading.value = false;
   }
 }
 
-onMounted(load);
+function clearFilters() {
+  status.value = "";
+  type.value = "";
+}
+
+watch([status, type], () => {
+  if (filterTimer) clearTimeout(filterTimer);
+  filterTimer = setTimeout(() => {
+    filterTimer = null;
+    load();
+  }, 180);
+});
+
+onMounted(async () => {
+  await load();
+});
+
+onBeforeUnmount(() => {
+  if (filterTimer) clearTimeout(filterTimer);
+});
 </script>

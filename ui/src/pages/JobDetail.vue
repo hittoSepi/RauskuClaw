@@ -3,10 +3,25 @@
     <div class="row" style="margin-bottom: 10px">
       <div style="font-weight: 700">Job</div>
       <div class="spacer"></div>
-      <button class="btn" @click="load">Refresh</button>
-      <button class="btn" v-if="job && (job.status==='queued' || job.status==='running')" @click="cancel">
-        Cancel
+      <span class="badge" :class="streamBadgeClass">{{ streamLabel }}</span>
+      <button class="btn" @click="load" :disabled="loading">{{ loading ? "Refreshing..." : "Refresh" }}</button>
+      <button
+        class="btn"
+        v-if="job && (job.status==='queued' || job.status==='running')"
+        @click="cancel"
+        :disabled="cancelling"
+      >
+        {{ cancelling ? "Cancelling..." : "Cancel" }}
       </button>
+    </div>
+
+    <div style="margin-bottom: 10px; color: var(--muted); font-size: 12px">
+      {{ loading ? "Loading job data..." : "Idle" }}
+      <span v-if="lastLoadedAt"> | last refresh: {{ lastLoadedAt }}</span>
+    </div>
+
+    <div v-if="statusMsg" style="margin-bottom: 10px; color: #7ee787; font-size: 13px">
+      {{ statusMsg }}
     </div>
 
     <div v-if="job">
@@ -69,7 +84,12 @@ const props = defineProps({ id: String });
 const job = ref(null);
 const logs = ref([]);
 const err = ref("");
+const statusMsg = ref("");
 const auto = ref(true);
+const loading = ref(false);
+const cancelling = ref(false);
+const streamStatus = ref("off");
+const lastLoadedAt = ref("");
 let stream = null;
 let reconnectTimer = null;
 
@@ -90,24 +110,49 @@ const logsText = computed(() =>
     .join("\n")
 );
 
+const streamLabel = computed(() => {
+  if (!auto.value) return "stream off";
+  if (streamStatus.value === "live") return "stream live";
+  if (streamStatus.value === "reconnecting") return "stream reconnecting";
+  return "stream idle";
+});
+
+const streamBadgeClass = computed(() => {
+  if (!auto.value) return "";
+  if (streamStatus.value === "live") return "ok";
+  if (streamStatus.value === "reconnecting") return "warn";
+  return "";
+});
+
 async function load() {
+  loading.value = true;
   err.value = "";
+  statusMsg.value = "";
   try {
     const r = await api.job(props.id);
     job.value = r.job;
     const l = await api.jobLogs(props.id, 500);
     logs.value = (l.logs || []).map(x => ({ ...x, id: x.id ?? null }));
+    lastLoadedAt.value = new Date().toLocaleTimeString();
   } catch (e) {
     err.value = e.message || String(e);
+  } finally {
+    loading.value = false;
   }
 }
 
 async function cancel() {
+  cancelling.value = true;
+  err.value = "";
+  statusMsg.value = "";
   try {
     await api.cancelJob(props.id);
     await load();
+    statusMsg.value = "Cancel request submitted successfully.";
   } catch (e) {
     err.value = e.message || String(e);
+  } finally {
+    cancelling.value = false;
   }
 }
 
@@ -137,6 +182,7 @@ function streamUrl() {
 
 function scheduleReconnect() {
   if (reconnectTimer || !auto.value) return;
+  streamStatus.value = "reconnecting";
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     connectStream();
@@ -160,6 +206,7 @@ function connectStream() {
 
   const es = new EventSource(streamUrl());
   stream = es;
+  streamStatus.value = "live";
 
   es.addEventListener("job_update", (ev) => {
     try {
@@ -178,6 +225,7 @@ function connectStream() {
   });
 
   es.addEventListener("end", () => {
+    streamStatus.value = "off";
     disconnectStream();
   });
 
@@ -185,13 +233,19 @@ function connectStream() {
     if (stream !== es) return;
     es.close();
     stream = null;
+    streamStatus.value = "reconnecting";
     scheduleReconnect();
   };
 }
 
 watch(auto, (enabled) => {
-  if (enabled) connectStream();
-  else disconnectStream();
+  if (enabled) {
+    streamStatus.value = "reconnecting";
+    connectStream();
+  } else {
+    streamStatus.value = "off";
+    disconnectStream();
+  }
 });
 
 onMounted(async () => {

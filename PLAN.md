@@ -196,3 +196,5 @@ Exit Criteria:
   - Milestones M1-M4 defined with objective/deliverables/acceptance/dependencies/risks/exit criteria.
   - Added SSE live job/log streaming (`/v1/jobs/:id/stream`) and UI integration in Job Detail.
   - Added `scripts/m1-smoke.sh` for reproducible M1 checks (idempotency, retry, callback allowlist).
+  - Added UI job type edit actions on `/types` (enable/disable, handler, default timeout, default attempts).
+  - Improved `/jobs` operator UX (auto-refresh on filter change, loading state, stale-request guard, clear-filters action).

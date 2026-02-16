@@ -1,8 +1,10 @@
 const os = require("os");
 const crypto = require("crypto");
 const { db } = require("./db");
+const { getConfig, envIntOrConfig, splitCsv } = require("./config");
 
-const workerId = process.env.WORKER_ID || os.hostname();
+const workerIdEnvName = String(getConfig("worker.worker_id_source.env", "WORKER_ID"));
+const workerId = process.env[workerIdEnvName] || os.hostname();
 
 function nowIso() {
   return new Date().toISOString();
@@ -25,11 +27,13 @@ function safeJsonStringify(v) {
 }
 
 function domainAllowlisted(urlStr) {
-  const allow = (process.env.CALLBACK_ALLOWLIST || "").trim();
-  if (!allow) return true; // MVP: if unset, allow all
+  const callbackAllowlistEnv = String(getConfig("callbacks.allowlist_env", "CALLBACK_ALLOWLIST"));
+  const allow = String(process.env[callbackAllowlistEnv] || "").trim();
+  const emptyBehavior = String(getConfig("callbacks.allowlist_behavior_when_empty", "allow_all"));
+  if (!allow) return emptyBehavior === "allow_all";
   let u;
   try { u = new URL(urlStr); } catch { return false; }
-  const allowed = allow.split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+  const allowed = splitCsv(allow).map(s => s.toLowerCase());
   const host = u.hostname.toLowerCase();
   return allowed.some(d => host === d || host.endsWith("." + d));
 }
@@ -83,7 +87,10 @@ async function runBuiltin(job, handler) {
   if (handler === "builtin:deploy.run") {
     log(job.id, "info", "Starting deploy (stub)", { input });
 
-    const allowedTargets = (process.env.DEPLOY_TARGET_ALLOWLIST || "staging").split(",").map(s => s.trim());
+    const allowlistEnvName = String(getConfig("handlers.deploy.allowlist_env", "DEPLOY_TARGET_ALLOWLIST"));
+    const fallbackTargets = getConfig("handlers.deploy.default_allowed_targets", ["staging"]);
+    const fallbackCsv = Array.isArray(fallbackTargets) ? fallbackTargets.join(",") : "staging";
+    const allowedTargets = splitCsv(process.env[allowlistEnvName] || fallbackCsv);
     const target = input.target || "staging";
     if (!allowedTargets.includes(target)) {
       throw new Error(`target not allowed: ${target}`);
@@ -241,7 +248,7 @@ async function processOne() {
 }
 
 function startWorker() {
-  const intervalMs = parseInt(process.env.WORKER_POLL_MS || "300", 10);
+  const intervalMs = envIntOrConfig("WORKER_POLL_MS", "worker.poll_interval_ms", 300);
   setInterval(() => {
     processOne().catch(() => {});
   }, intervalMs);

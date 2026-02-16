@@ -34,7 +34,7 @@ Current implementation:
   - jobs list
   - create job
   - job detail/logs
-  - job types
+  - job types (edit: enabled/handler/default timeout/default attempts)
 
 ## Architecture at a Glance
 - `openclaw-api` container:
@@ -56,7 +56,7 @@ cd /opt/openclaw
 cp .env.example .env
 ```
 
-2. Edit `.env` and set at least `API_KEY`.
+2. Edit `.env` and set at least `API_KEY` (recommended).
 ```bash
 cd /opt/openclaw
 sed -n '1,120p' .env
@@ -89,7 +89,8 @@ Base variables from `.env.example`:
 | Variable | Default | Used by | Notes |
 |---|---|---|---|
 | `PORT` | `3001` | API | API listen port inside container |
-| `API_KEY` | `change-me-please` | API | Required by all `/v1/*` routes if non-empty |
+| `API_KEY` | `change-me-please` | API | Required by all `/v1/*` routes unless `API_AUTH_DISABLED=1` |
+| `API_AUTH_DISABLED` | `0` | API | `1` only for local dev to bypass API key auth |
 | `DB_PATH` | `/data/openclaw.sqlite` | API + Worker | SQLite file path inside containers |
 | `WORKER_POLL_MS` | `300` | Worker | Poll interval in milliseconds |
 | `DEPLOY_TARGET_ALLOWLIST` | `staging,prod` | Worker | Allowed targets for `deploy.run` handler |
@@ -98,9 +99,37 @@ Base variables from `.env.example`:
 Notes:
 - In current code, empty `CALLBACK_ALLOWLIST` means all callback domains are allowed.
 - `docker-compose.yml` also applies defaults for several worker/API envs.
+- Canonical shared config file is `rauskuclaw.json` (service-level defaults and env mapping).
+- Full configuration guide: [`docs/CONFIG.md`](./docs/CONFIG.md).
+- Runtime now reads `rauskuclaw.json` in API + worker via `RAUSKUCLAW_CONFIG_PATH`.
+- Runtime validates `rauskuclaw.json` with Ajv JSON Schema (`app/config.schema.json`) at startup.
+
+## Config Files
+- `.env`:
+  - runtime secrets and environment-specific overrides.
+- `.env.example`:
+  - template for required/optional environment variables.
+- `rauskuclaw.json`:
+  - shared configuration contract for API/worker/UI/security defaults.
+  - includes `env_mapping` that documents how env vars map to config keys.
+- `docs/CONFIG.md`:
+  - detailed field-by-field reference and usage conventions.
+
+## Config Precedence
+When the same setting exists in multiple places, precedence is:
+1. Environment variable (`.env` / container env)
+2. `rauskuclaw.json`
+3. hardcoded application fallback
+
+Examples:
+- `PORT` overrides `rauskuclaw.json -> api.port`.
+- `WORKER_POLL_MS` overrides `rauskuclaw.json -> worker.poll_interval_ms`.
+- `DB_PATH` overrides `rauskuclaw.json -> database.path`.
+- If `rauskuclaw.json` exists but fails schema validation, API/worker fail fast on startup.
 
 ## API Summary
-All `/v1/*` routes require header `x-api-key: <API_KEY>` when `API_KEY` is configured.
+All `/v1/*` routes require header `x-api-key: <API_KEY>`.
+If `API_KEY` is empty and `API_AUTH_DISABLED` is not `1`, API returns `503 AUTH_NOT_CONFIGURED`.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -137,7 +166,8 @@ UI is mounted under `/ui/` and uses these internal routes:
 ## Security Notes
 - API key:
   - `/v1/*` uses `x-api-key`.
-  - if `API_KEY` is empty, auth middleware allows all requests.
+  - secure default: if `API_KEY` is empty, requests are denied (`503 AUTH_NOT_CONFIGURED`).
+  - local dev override: set `API_AUTH_DISABLED=1` only in trusted environments.
 - SSE authentication:
   - browser `EventSource` cannot send custom headers.
   - `/v1/jobs/:id/stream` accepts `api_key` query parameter for UI compatibility.

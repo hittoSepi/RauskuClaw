@@ -3,7 +3,7 @@
     <div class="row">
       <div style="font-weight: 700">Job types</div>
       <div class="spacer"></div>
-      <button class="btn" @click="load">Refresh</button>
+      <button class="btn" @click="load" :disabled="loading">{{ loading ? "Loading..." : "Refresh" }}</button>
     </div>
 
     <table class="table">
@@ -14,17 +14,55 @@
           <th>handler</th>
           <th>default timeout</th>
           <th>default attempts</th>
+          <th>actions</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="t in types" :key="t.name">
           <td>{{ t.name }}</td>
           <td>
-            <span class="badge" :class="t.enabled ? 'ok' : 'err'">{{ t.enabled }}</span>
+            <label class="row" style="gap: 6px">
+              <input type="checkbox" v-model="t.enabled" />
+              <span class="badge" :class="t.enabled ? 'ok' : 'err'">{{ t.enabled }}</span>
+            </label>
           </td>
-          <td style="color: var(--muted)">{{ t.handler }}</td>
-          <td>{{ t.default_timeout_sec }}s</td>
-          <td>{{ t.default_max_attempts }}</td>
+          <td>
+            <input class="input" v-model="t.handler" style="width: 100%; min-width: 230px" />
+          </td>
+          <td>
+            <input
+              class="input"
+              type="number"
+              min="1"
+              max="3600"
+              v-model.number="t.default_timeout_sec"
+              style="width: 110px"
+            />
+          </td>
+          <td>
+            <input
+              class="input"
+              type="number"
+              min="1"
+              max="10"
+              v-model.number="t.default_max_attempts"
+              style="width: 90px"
+            />
+          </td>
+          <td>
+            <div class="row" style="gap: 6px">
+              <button class="btn primary" @click="saveType(t)" :disabled="!isDirty(t) || !isValid(t) || t.saving">
+                {{ t.saving ? "Saving..." : "Save" }}
+              </button>
+              <button class="btn" @click="resetType(t)" :disabled="!isDirty(t) || t.saving">Reset</button>
+            </div>
+            <div v-if="t.localErr" style="margin-top: 6px; color: #ff7b72; font-size: 12px">
+              {{ t.localErr }}
+            </div>
+          </td>
+        </tr>
+        <tr v-if="types.length === 0">
+          <td colspan="6" style="color: var(--muted)">No job types found.</td>
         </tr>
       </tbody>
     </table>
@@ -41,14 +79,98 @@ import { api } from "../api.js";
 
 const types = ref([]);
 const err = ref("");
+const loading = ref(false);
+
+function toEditable(t) {
+  return {
+    name: t.name,
+    enabled: !!t.enabled,
+    handler: t.handler,
+    default_timeout_sec: Number(t.default_timeout_sec),
+    default_max_attempts: Number(t.default_max_attempts),
+    saving: false,
+    localErr: "",
+    _original: {
+      enabled: !!t.enabled,
+      handler: t.handler,
+      default_timeout_sec: Number(t.default_timeout_sec),
+      default_max_attempts: Number(t.default_max_attempts),
+    }
+  };
+}
+
+function isDirty(t) {
+  return (
+    t.enabled !== t._original.enabled ||
+    t.handler !== t._original.handler ||
+    Number(t.default_timeout_sec) !== t._original.default_timeout_sec ||
+    Number(t.default_max_attempts) !== t._original.default_max_attempts
+  );
+}
+
+function isValid(t) {
+  const to = Number(t.default_timeout_sec);
+  const ma = Number(t.default_max_attempts);
+  return (
+    typeof t.handler === "string" &&
+    t.handler.trim().length > 0 &&
+    Number.isInteger(to) &&
+    to >= 1 &&
+    to <= 3600 &&
+    Number.isInteger(ma) &&
+    ma >= 1 &&
+    ma <= 10
+  );
+}
+
+function resetType(t) {
+  t.enabled = t._original.enabled;
+  t.handler = t._original.handler;
+  t.default_timeout_sec = t._original.default_timeout_sec;
+  t.default_max_attempts = t._original.default_max_attempts;
+  t.localErr = "";
+}
 
 async function load() {
   err.value = "";
+  loading.value = true;
   try {
     const r = await api.jobTypes();
-    types.value = r.types || [];
+    types.value = (r.types || []).map(toEditable);
   } catch (e) {
     err.value = e.message || String(e);
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function saveType(t) {
+  t.localErr = "";
+  if (!isValid(t)) {
+    t.localErr = "Invalid values: handler, timeout (1..3600), attempts (1..10)";
+    return;
+  }
+
+  t.saving = true;
+  try {
+    const payload = {
+      enabled: !!t.enabled,
+      handler: String(t.handler).trim(),
+      default_timeout_sec: Number(t.default_timeout_sec),
+      default_max_attempts: Number(t.default_max_attempts),
+    };
+    const r = await api.updateJobType(t.name, payload);
+    const updated = toEditable(r.type || payload);
+    t.enabled = updated.enabled;
+    t.handler = updated.handler;
+    t.default_timeout_sec = updated.default_timeout_sec;
+    t.default_max_attempts = updated.default_max_attempts;
+    t._original = updated._original;
+  } catch (e) {
+    t.localErr = e.message || String(e);
+    err.value = t.localErr;
+  } finally {
+    t.saving = false;
   }
 }
 

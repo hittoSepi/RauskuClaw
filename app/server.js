@@ -3,27 +3,49 @@ const morgan = require("morgan");
 const crypto = require("crypto");
 const { db } = require("./db");
 const { log } = require("./worker");
+const { getConfig, envOrConfig, envIntOrConfig } = require("./config");
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 app.use(morgan("combined"));
 
-const port = process.env.PORT || 3001;
-const apiKey = process.env.API_KEY || "";
+const port = envIntOrConfig("PORT", "api.port", 3001);
+const apiKey = String(process.env.API_KEY || "").trim();
+const apiAuthDisabled = process.env.API_AUTH_DISABLED != null
+  ? process.env.API_AUTH_DISABLED === "1"
+  : getConfig("api.auth.required", true) === false;
+const apiKeyHeader = String(envOrConfig("API_KEY_HEADER", "api.auth.header", "x-api-key")).toLowerCase();
+const sseApiKeyParam = String(envOrConfig("SSE_API_KEY_PARAM", "api.sse.query_api_key_param", "api_key"));
 
 function nowIso() { return new Date().toISOString(); }
 
+function authMisconfigured(res) {
+  return res.status(503).json({
+    ok: false,
+    error: {
+      code: "AUTH_NOT_CONFIGURED",
+      message: "API auth is not configured. Set API_KEY or enable API_AUTH_DISABLED=1 for local development."
+    }
+  });
+}
+
 function auth(req, res, next) {
-  if (!apiKey) return next();
-  const got = req.header("x-api-key");
+  if (!apiKey) {
+    if (apiAuthDisabled) return next();
+    return authMisconfigured(res);
+  }
+  const got = req.header(apiKeyHeader);
   if (got === apiKey) return next();
   return res.status(401).json({ ok: false, error: { code: "UNAUTHORIZED", message: "Unauthorized" } });
 }
 
 function authSse(req, res, next) {
-  if (!apiKey) return next();
-  const headerKey = req.header("x-api-key");
-  const queryKey = req.query.api_key ? String(req.query.api_key) : "";
+  if (!apiKey) {
+    if (apiAuthDisabled) return next();
+    return authMisconfigured(res);
+  }
+  const headerKey = req.header(apiKeyHeader);
+  const queryKey = req.query[sseApiKeyParam] ? String(req.query[sseApiKeyParam]) : "";
   if (headerKey === apiKey || queryKey === apiKey) return next();
   return res.status(401).json({ ok: false, error: { code: "UNAUTHORIZED", message: "Unauthorized" } });
 }

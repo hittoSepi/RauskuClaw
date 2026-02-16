@@ -1,0 +1,141 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://rauskuclaw.local/schemas/config.schema.json",
+  "title": "RauskuClaw Config",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": { "type": "integer", "minimum": 1 },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "environment": { "type": "string", "minLength": 1 }
+      }
+    },
+    "api": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "auth": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "header": { "type": "string", "minLength": 1 },
+            "required": { "type": "boolean" },
+            "allow_without_key_when": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "env": { "type": "string", "minLength": 1 },
+                "equals": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        },
+        "sse": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "route": { "type": "string", "minLength": 1 },
+            "query_api_key_param": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "worker": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "poll_interval_ms": { "type": "integer", "minimum": 1 },
+        "worker_id_source": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "env": { "type": "string", "minLength": 1 },
+            "fallback": { "type": "string", "minLength": 1 }
+          }
+        },
+        "job_defaults": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "priority": { "type": "integer", "minimum": 0, "maximum": 10 },
+            "timeout_sec": { "type": "integer", "minimum": 1, "maximum": 3600 },
+            "max_attempts": { "type": "integer", "minimum": 1, "maximum": 10 }
+          }
+        }
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "engine": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "mode": {
+          "type": "string",
+          "enum": ["WAL", "wal", "DELETE", "delete", "TRUNCATE", "truncate", "PERSIST", "persist", "MEMORY", "memory", "OFF", "off"]
+        }
+      }
+    },
+    "callbacks": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "allowlist_env": { "type": "string", "minLength": 1 },
+        "allowlist_behavior_when_empty": {
+          "type": "string",
+          "enum": ["allow_all", "deny_all"]
+        }
+      }
+    },
+    "handlers": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "deploy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "allowlist_env": { "type": "string", "minLength": 1 },
+            "default_allowed_targets": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "minItems": 1
+            }
+          }
+        }
+      }
+    },
+    "ui": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mount_path": { "type": "string", "minLength": 1 },
+        "container_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "host_port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "api_container": { "type": "string", "minLength": 1 },
+        "worker_container": { "type": "string", "minLength": 1 },
+        "ui_container": { "type": "string", "minLength": 1 },
+        "compose_file": { "type": "string", "minLength": 1 }
+      }
+    },
+    "env_mapping": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}
