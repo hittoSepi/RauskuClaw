@@ -20,6 +20,14 @@ function auth(req, res, next) {
   return res.status(401).json({ ok: false, error: { code: "UNAUTHORIZED", message: "Unauthorized" } });
 }
 
+function authSse(req, res, next) {
+  if (!apiKey) return next();
+  const headerKey = req.header("x-api-key");
+  const queryKey = req.query.api_key ? String(req.query.api_key) : "";
+  if (headerKey === apiKey || queryKey === apiKey) return next();
+  return res.status(401).json({ ok: false, error: { code: "UNAUTHORIZED", message: "Unauthorized" } });
+}
+
 function badRequest(res, code, message, details) {
   return res.status(400).json({ ok: false, error: { code, message, details } });
 }
@@ -366,7 +374,7 @@ app.get("/v1/jobs/:id/logs", auth, (req, res) => {
   if (!exists) return res.status(404).json({ ok: false, error: { code: "NOT_FOUND", message: "Job not found" } });
 
   const rows = db.prepare(`
-    SELECT ts, level, message, meta_json
+    SELECT id, ts, level, message, meta_json
     FROM job_logs
     WHERE job_id = ?
     ORDER BY id DESC
@@ -378,12 +386,111 @@ app.get("/v1/jobs/:id/logs", auth, (req, res) => {
   res.json({
     ok: true,
     logs: rows.map(r => ({
+      id: r.id,
       ts: r.ts,
       level: r.level,
       message: r.message,
       meta: r.meta_json ? JSON.parse(r.meta_json) : null
     })),
     count: rows.length
+  });
+});
+
+app.get("/v1/jobs/:id/stream", authSse, (req, res) => {
+  const jobId = req.params.id;
+  const exists = db.prepare(`SELECT 1 FROM jobs WHERE id = ?`).get(jobId);
+  if (!exists) return res.status(404).json({ ok: false, error: { code: "NOT_FOUND", message: "Job not found" } });
+
+  res.setHeader("content-type", "text/event-stream");
+  res.setHeader("cache-control", "no-cache");
+  res.setHeader("connection", "keep-alive");
+  res.flushHeaders?.();
+  res.write("retry: 2000\n\n");
+
+  let closed = false;
+  let lastLogId = 0;
+  let lastFingerprint = "";
+  const lastEventId = parseInt(req.header("last-event-id") || "0", 10);
+  const querySinceLogId = parseInt(req.query.since_log_id || "0", 10);
+  if (Number.isInteger(lastEventId) && lastEventId > 0) lastLogId = lastEventId;
+  if (Number.isInteger(querySinceLogId) && querySinceLogId > lastLogId) lastLogId = querySinceLogId;
+
+  function writeSse({ event, data, id }) {
+    if (closed) return;
+    if (id != null) res.write(`id: ${id}\n`);
+    if (event) res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  }
+
+  function pushJobIfChanged() {
+    const row = db.prepare(`SELECT * FROM jobs WHERE id = ?`).get(jobId);
+    if (!row) {
+      writeSse({ event: "end", data: { reason: "deleted" } });
+      return false;
+    }
+
+    const fingerprint = stableHash({
+      status: row.status,
+      attempts: row.attempts,
+      max_attempts: row.max_attempts,
+      timeout_sec: row.timeout_sec,
+      priority: row.priority,
+      updated_at: row.updated_at,
+      result_json: row.result_json,
+      error_json: row.error_json,
+      locked_at: row.locked_at,
+      locked_by: row.locked_by
+    });
+
+    if (fingerprint !== lastFingerprint) {
+      lastFingerprint = fingerprint;
+      writeSse({ event: "job_update", data: { job: rowToJob(row) } });
+    }
+
+    return true;
+  }
+
+  function pushNewLogs() {
+    const rows = db.prepare(`
+      SELECT id, ts, level, message, meta_json
+      FROM job_logs
+      WHERE job_id = ? AND id > ?
+      ORDER BY id ASC
+      LIMIT 200
+    `).all(jobId, lastLogId);
+
+    for (const r of rows) {
+      lastLogId = r.id;
+      writeSse({
+        event: "log_append",
+        id: r.id,
+        data: {
+          id: r.id,
+          ts: r.ts,
+          level: r.level,
+          message: r.message,
+          meta: r.meta_json ? JSON.parse(r.meta_json) : null
+        }
+      });
+    }
+  }
+
+  function tick() {
+    if (!pushJobIfChanged()) return;
+    pushNewLogs();
+  }
+
+  tick();
+
+  const pollTimer = setInterval(tick, 1000);
+  const heartbeatTimer = setInterval(() => {
+    if (!closed) res.write(": heartbeat\n\n");
+  }, 20_000);
+
+  req.on("close", () => {
+    closed = true;
+    clearInterval(pollTimer);
+    clearInterval(heartbeatTimer);
   });
 });
 

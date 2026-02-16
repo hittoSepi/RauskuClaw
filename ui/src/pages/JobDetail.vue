@@ -61,7 +61,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from "vue";
+import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import { api } from "../api.js";
 
 const props = defineProps({ id: String });
@@ -70,7 +70,8 @@ const job = ref(null);
 const logs = ref([]);
 const err = ref("");
 const auto = ref(true);
-let timer = null;
+let stream = null;
+let reconnectTimer = null;
 
 function badgeClass(s) {
   if (s === "succeeded") return "ok";
@@ -95,7 +96,7 @@ async function load() {
     const r = await api.job(props.id);
     job.value = r.job;
     const l = await api.jobLogs(props.id, 500);
-    logs.value = l.logs || [];
+    logs.value = (l.logs || []).map(x => ({ ...x, id: x.id ?? null }));
   } catch (e) {
     err.value = e.message || String(e);
   }
@@ -110,18 +111,93 @@ async function cancel() {
   }
 }
 
-function start() {
-  stop();
-  timer = setInterval(() => {
-    if (auto.value) load();
-  }, 1500);
+function appendLog(logRow) {
+  if (logRow?.id != null && logs.value.some(x => x.id === logRow.id)) return;
+  logs.value.push(logRow);
+  if (logs.value.length > 2000) logs.value = logs.value.slice(-2000);
 }
 
-function stop() {
-  if (timer) clearInterval(timer);
-  timer = null;
+function currentMaxLogId() {
+  let max = 0;
+  for (const l of logs.value) {
+    if (Number.isInteger(l?.id) && l.id > max) max = l.id;
+  }
+  return max;
 }
 
-onMounted(() => { load(); start(); });
-onBeforeUnmount(stop);
+function streamUrl() {
+  const key = sessionStorage.getItem("openclaw_api_key") || "";
+  const qs = new URLSearchParams();
+  if (key) qs.set("api_key", key);
+  const sinceLogId = currentMaxLogId();
+  if (sinceLogId > 0) qs.set("since_log_id", String(sinceLogId));
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  return `/v1/jobs/${encodeURIComponent(props.id)}/stream${suffix}`;
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer || !auto.value) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connectStream();
+  }, 2000);
+}
+
+function disconnectStream() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  if (stream) {
+    stream.close();
+    stream = null;
+  }
+}
+
+function connectStream() {
+  disconnectStream();
+  if (!auto.value) return;
+
+  const es = new EventSource(streamUrl());
+  stream = es;
+
+  es.addEventListener("job_update", (ev) => {
+    try {
+      const data = JSON.parse(ev.data || "{}");
+      if (data?.job) job.value = data.job;
+      err.value = "";
+    } catch {}
+  });
+
+  es.addEventListener("log_append", (ev) => {
+    try {
+      const data = JSON.parse(ev.data || "{}");
+      appendLog(data);
+      err.value = "";
+    } catch {}
+  });
+
+  es.addEventListener("end", () => {
+    disconnectStream();
+  });
+
+  es.onerror = () => {
+    if (stream !== es) return;
+    es.close();
+    stream = null;
+    scheduleReconnect();
+  };
+}
+
+watch(auto, (enabled) => {
+  if (enabled) connectStream();
+  else disconnectStream();
+});
+
+onMounted(async () => {
+  await load();
+  connectStream();
+});
+
+onBeforeUnmount(disconnectStream);
 </script>
