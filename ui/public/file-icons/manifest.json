@@ -1,0 +1,19 @@
+{
+  "dir": "default-folder",
+  "file": "default-file",
+  "ts": "file-type-typescript",
+  "json": "file-type-geojson",
+  "yaml": "file-type-light-yaml",
+  "md": "file-type-markdown",
+  "py": "file-type-python",
+  "go": "file-type-cargo",
+  "rs": "file-type-light-rust",
+  "java": "file-type-java",
+  "sql": "file-type-mysql",
+  "sh": "file-type-nushell",
+  "docker": "file-type-docker",
+  "html": "file-type-antlers-html",
+  "xml": "file-type-wxml",
+  "css": "file-type-css",
+  "vue": "file-type-vue"
+}

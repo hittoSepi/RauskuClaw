@@ -208,6 +208,31 @@ Exit Criteria:
   - Hardened suggested-job auto-approval policy maintainability:
     - extracted policy decisions from `Chat.vue` to `ui/src/suggested_job_policy.js`
     - added UI unit tests for policy modes, thresholds, allowlist, and normalization (`ui/test/suggested_job_policy.test.mjs`)
+  - Added suggested-job end-to-end flow helper + integration coverage:
+    - extracted parse+dedupe+policy+creation-selection flow from `Chat.vue` to `ui/src/suggested_jobs_flow.js`
+    - added integration-style UI test validating chained behavior from fenced response to create payload (`ui/test/suggested_jobs_flow.test.mjs`)
+  - UI bundle split hardening:
+    - switched page routes to lazy-loaded imports in `ui/src/router.js`
+    - added Vite `manualChunks` split (`vendor` + `highlight`) in `ui/vite.config.js`
+    - reduced main entry chunk size; highlight library isolated into dedicated async chunk
+  - Optimized syntax-highlighting bundle scope:
+    - replaced full `highlight.js` import with `highlight.js/lib/core` + selected dev language registrations (`ui/src/highlight.js`)
+    - limited auto-detection to common development file types (js/ts/json/bash/yaml/python/go/rust/java/sql/dockerfile/xml/css/markdown)
+    - reduced highlight chunk size from ~940 kB to ~75 kB (minified, before gzip)
+  - Improved workspace code-preview accuracy:
+    - made highlight selection filename-aware (extension mapping + Dockerfile special case) in `ui/src/highlight.js`
+    - kept auto-detection fallback for unknown file types
+    - added highlight utility tests (`ui/test/highlight.test.mjs`)
+  - Added workspace file-type icon badges:
+    - added extension-to-icon-token mapping helper (`ui/src/file_icons.js`)
+    - rendered file-type badges in workspace file explorer list (with category color styling) in `ui/src/pages/Chat.vue`
+    - added language badge in preview metadata based on filename detection
+    - added unit coverage for icon mapping (`ui/test/file_icons.test.mjs`)
+  - Switched workspace icons to exported Iconify SVG assets:
+    - added Iconify export pipeline script (`ui/scripts/export-file-icons.mjs`) based on `parseIconSet()` + `iconToSVG()`
+    - added `ui` command `npm run icons:export` and dependencies `@iconify/utils` + `@iconify-json/vscode-icons`
+    - generated selected file icons to `ui/public/file-icons/*` with manifest metadata
+    - file explorer now renders SVG icons from exported assets with token fallback
   - Completed backlog item "Multi-queue foundation (phase 1)":
     - added `jobs.queue` column + migration guard for existing databases
     - added queue-aware indexing and safe migration ordering

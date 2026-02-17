@@ -291,17 +291,32 @@
             :class="{ 'workspace-item-active': !entry.is_dir && selectedWorkspaceFile?.path === entry.path }"
             @click.prevent="onWorkspaceEntryClick(entry)"
           >
-            <span
-              v-if="entry.is_dir"
-              class="workspace-entry-name"
-            >
-              {{ entry.name }}/
-            </span>
-            <span
-              v-else
-              class="workspace-entry-name workspace-file"
-            >
-              {{ entry.name }}
+            <span class="workspace-entry-main">
+              <span
+                class="workspace-entry-icon"
+                :class="`workspace-entry-icon-${fileIcon(entry).kind}`"
+                :title="fileIcon(entry).token"
+              >
+                <img
+                  v-if="fileIcon(entry).src"
+                  class="workspace-entry-icon-img"
+                  :src="fileIcon(entry).src"
+                  :alt="`${fileIcon(entry).token} icon`"
+                />
+                <span v-else>{{ fileIcon(entry).token }}</span>
+              </span>
+              <span
+                v-if="entry.is_dir"
+                class="workspace-entry-name"
+              >
+                {{ entry.name }}/
+              </span>
+              <span
+                v-else
+                class="workspace-entry-name workspace-file"
+              >
+                {{ entry.name }}
+              </span>
             </span>
             <span class="badge">{{ entry.is_dir ? "dir" : (formatSize(entry.size) || "file") }}</span>
           </a>
@@ -359,6 +374,7 @@
             <div class="workspace-preview-meta">
               <span class="badge">{{ selectedWorkspaceFile.path }}</span>
               <span class="badge">{{ formatSize(selectedWorkspaceFile.size) || "file" }}</span>
+              <span class="badge">lang {{ workspaceDetectedLang }}</span>
             </div>
             <textarea
               v-if="workspaceEditMode"
@@ -379,10 +395,10 @@
 
 <script setup>
 import { computed, nextTick, onMounted, ref, watch } from "vue";
-import hljs from "highlight.js";
 import { api } from "../api.js";
 import { getUiPrefs, loadUiPrefsFromApi } from "../ui_prefs.js";
-import { filterDuplicateSuggestions, parseSuggestedJobs } from "../suggested_jobs.js";
+import { detectLanguageForFilename, highlightCodeAuto } from "../highlight.js";
+import { iconAssetForEntry } from "../file_icons.js";
 import {
   buildMemoryInput,
   buildMemoryWriteInput,
@@ -391,7 +407,12 @@ import {
   validateMemoryInput,
   validateMemoryWriteInput
 } from "../chat_memory.js";
-import { getSuggestedJobDecision } from "../suggested_job_policy.js";
+import {
+  buildCreateJobPayload,
+  evaluateSuggestedJobDecisions,
+  parseFilterAndDecideSuggestedJobs,
+  selectSuggestedJobsForCreation
+} from "../suggested_jobs_flow.js";
 
 const AGENT_SYSTEM_PROMPT = [
   "You are RauskuClaw operator assistant.",
@@ -506,22 +527,23 @@ const sendDisabledReason = computed(() => {
   return "";
 });
 
-const suggestedJobDecisions = computed(() => proposedJobs.value.map((j) => getSuggestedJobDecision(j, {
+const suggestedJobDecisions = computed(() => evaluateSuggestedJobDecisions(proposedJobs.value, {
   mode: suggestedApprovalMode.value,
   maxTimeoutSec: suggestedAutoMaxTimeoutSec.value,
   maxAttempts: suggestedAutoMaxAttempts.value,
   maxPriority: suggestedAutoMaxPriority.value,
   allowTypes: suggestedAutoAllowTypes.value
-})));
+}));
 const autoSuggestedCount = computed(() => suggestedJobDecisions.value.filter((x) => x.auto).length);
 const approvalSuggestedCount = computed(() => suggestedJobDecisions.value.filter((x) => !x.auto).length);
 
 const workspaceHighlightedHtml = computed(() => {
   if (workspaceEditMode.value) return "";
   const raw = String(selectedWorkspaceFile.value?.content || "");
+  const filePath = String(selectedWorkspaceFile.value?.path || "");
   if (!raw) return "";
   try {
-    return hljs.highlightAuto(raw).value;
+    return highlightCodeAuto(raw, filePath);
   } catch {
     return raw
       .replaceAll("&", "&amp;")
@@ -529,6 +551,16 @@ const workspaceHighlightedHtml = computed(() => {
       .replaceAll(">", "&gt;");
   }
 });
+
+const workspaceDetectedLang = computed(() => {
+  const filePath = String(selectedWorkspaceFile.value?.path || "");
+  const lang = detectLanguageForFilename(filePath);
+  return lang || "plain";
+});
+
+function fileIcon(entry) {
+  return iconAssetForEntry(entry);
+}
 
 function nowTime() {
   return new Date().toLocaleTimeString();
@@ -1201,14 +1233,21 @@ async function resumePendingChatJob() {
       jobId
     });
 
-    const suggestions = parseSuggestedJobs(outText);
-    const filtered = filterDuplicateSuggestions(suggestions, {
+    const flow = parseFilterAndDecideSuggestedJobs({
+      text: outText,
       currentType: selectedType.value,
-      userText: latestUserMessageText()
+      userText: latestUserMessageText(),
+      policy: {
+        mode: suggestedApprovalMode.value,
+        maxTimeoutSec: suggestedAutoMaxTimeoutSec.value,
+        maxAttempts: suggestedAutoMaxAttempts.value,
+        maxPriority: suggestedAutoMaxPriority.value,
+        allowTypes: suggestedAutoAllowTypes.value
+      }
     });
-    proposedJobs.value = filtered.kept;
-    if (filtered.kept.length > 0) {
-      statusMsg.value = `Agent suggested ${filtered.kept.length} job(s).`;
+    proposedJobs.value = flow.filtered.kept;
+    if (flow.filtered.kept.length > 0) {
+      statusMsg.value = `Agent suggested ${flow.filtered.kept.length} job(s).`;
     }
   } catch (e) {
     updateMessage(assistantIndex, {
@@ -1355,22 +1394,29 @@ async function sendMessage() {
     const outText = String(done?.result?.output_text || "").trim() || JSON.stringify(done?.result || {}, null, 2);
     const memoryWriteStatus = parseMemoryWriteStatus({ done, memoryWriteInput });
     trace.add("Checking suggested jobs in response.");
-    const suggestions = parseSuggestedJobs(outText);
-    const filtered = filterDuplicateSuggestions(suggestions, {
+    const flow = parseFilterAndDecideSuggestedJobs({
+      text: outText,
       currentType: selectedType.value,
-      userText: text
+      userText: text,
+      policy: {
+        mode: suggestedApprovalMode.value,
+        maxTimeoutSec: suggestedAutoMaxTimeoutSec.value,
+        maxAttempts: suggestedAutoMaxAttempts.value,
+        maxPriority: suggestedAutoMaxPriority.value,
+        allowTypes: suggestedAutoAllowTypes.value
+      }
     });
-    proposedJobs.value = filtered.kept;
+    proposedJobs.value = flow.filtered.kept;
     let assistantText = outText;
-    if (plannerEnabled && filtered.kept.length > 0) {
-      const lines = filtered.kept.map((j, idx) => {
+    if (plannerEnabled && flow.filtered.kept.length > 0) {
+      const lines = flow.filtered.kept.map((j, idx) => {
         const queuePart = j.queue ? `, q=${j.queue}` : "";
         return `${idx + 1}. ${j.type} (p${j.priority}, t=${j.timeout_sec}s, a=${j.max_attempts}${queuePart})`;
       });
       assistantText = [
         "Planner phase complete.",
         "",
-        `Generated ${filtered.kept.length} subjob(s):`,
+        `Generated ${flow.filtered.kept.length} subjob(s):`,
         ...lines,
         "",
         "Review and run from suggested jobs."
@@ -1384,15 +1430,15 @@ async function sendMessage() {
       ...(memoryWriteStatus ? { memoryWriteStatus } : {})
     });
     pendingChatJob.value = null;
-    if (filtered.dropped > 0) {
-      trace.add(`Dropped ${filtered.dropped} duplicate suggested job(s) already covered by this chat run.`);
+    if (flow.filtered.dropped > 0) {
+      trace.add(`Dropped ${flow.filtered.dropped} duplicate suggested job(s) already covered by this chat run.`);
     }
-    if (filtered.kept.length > 0) {
-      trace.add(`Found ${filtered.kept.length} suggested job(s).`);
+    if (flow.filtered.kept.length > 0) {
+      trace.add(`Found ${flow.filtered.kept.length} suggested job(s).`);
       updateMessage(assistantIndex, { trace: trace.list() });
       statusMsg.value = plannerEnabled
-        ? `Planner suggested ${filtered.kept.length} subjob(s).`
-        : `Agent suggested ${filtered.kept.length} job(s).`;
+        ? `Planner suggested ${flow.filtered.kept.length} subjob(s).`
+        : `Agent suggested ${flow.filtered.kept.length} job(s).`;
       if (autoCreateJobs.value) await createProposedJobs("auto");
     } else {
       trace.add("No suggested jobs found.");
@@ -1418,26 +1464,19 @@ async function createProposedJobs(mode = "all") {
   creatingJobs.value = true;
   err.value = "";
   try {
-    const normalizedMode = String(mode || "all").trim();
-    const decisions = suggestedJobDecisions.value;
-    const sourceJobs = proposedJobs.value.map((job, index) => ({ job, index }));
-    const selected = sourceJobs.filter(({ index }) => {
-      if (normalizedMode === "auto") return decisions[index]?.auto === true;
-      if (normalizedMode === "approval") return decisions[index]?.auto !== true;
-      return true;
+    const selectedFlow = selectSuggestedJobsForCreation({
+      jobs: proposedJobs.value,
+      decisions: suggestedJobDecisions.value,
+      mode,
+      enabledTypes: enabledTypeNames.value
     });
+    const { normalizedMode, selected, valid: validJobs, invalidTypes } = selectedFlow;
     if (!selected.length) {
       statusMsg.value = normalizedMode === "auto"
         ? "No auto-allowed suggested jobs to create."
         : (normalizedMode === "approval" ? "No approval-required suggested jobs to create." : "No suggested jobs to create.");
       return;
     }
-
-    const enabled = new Set(enabledTypeNames.value);
-    const validJobs = selected.filter(({ job }) => enabled.has(String(job?.type || "").trim()));
-    const invalidTypes = selected
-      .map(({ job }) => String(job?.type || "").trim())
-      .filter((t) => t && !enabled.has(t));
     if (!validJobs.length) {
       err.value = invalidTypes.length
         ? `Suggested jobs use unknown/disabled type(s): ${Array.from(new Set(invalidTypes)).join(", ")}`
@@ -1450,15 +1489,7 @@ async function createProposedJobs(mode = "all") {
     const createdIndexes = new Set();
     for (const item of validJobs) {
       const j = item.job;
-      const r = await api.createJob({
-        type: j.type,
-        queue: j.queue || undefined,
-        input: j.input,
-        priority: j.priority,
-        timeout_sec: j.timeout_sec,
-        max_attempts: j.max_attempts,
-        tags: j.tags
-      });
+      const r = await api.createJob(buildCreateJobPayload(j));
       const createdId = String(r?.job?.id || "").trim();
       if (!createdId) continue;
       ids.push(createdId);
@@ -1650,11 +1681,78 @@ watch(
   cursor: pointer;
 }
 
+.workspace-entry-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+.workspace-entry-icon {
+  min-width: 46px;
+  text-align: center;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: #cdd9f5;
+  background: rgba(255, 255, 255, 0.05);
+  margin-right: 8px;
+}
+
+.workspace-entry-icon-img {
+  width: 14px;
+  height: 14px;
+  display: block;
+  margin: 0 auto;
+}
+
+.workspace-entry-icon-dir {
+  color: #8ec7ff;
+  border-color: rgba(142, 199, 255, 0.45);
+}
+
+.workspace-entry-icon-js,
+.workspace-entry-icon-ts,
+.workspace-entry-icon-json,
+.workspace-entry-icon-yaml {
+  color: #facc74;
+  border-color: rgba(250, 204, 116, 0.45);
+}
+
+.workspace-entry-icon-py,
+.workspace-entry-icon-go,
+.workspace-entry-icon-rs,
+.workspace-entry-icon-java,
+.workspace-entry-icon-sql {
+  color: #7ee787;
+  border-color: rgba(126, 231, 135, 0.45);
+}
+
+.workspace-entry-icon-html,
+.workspace-entry-icon-xml,
+.workspace-entry-icon-css,
+.workspace-entry-icon-vue,
+.workspace-entry-icon-md {
+  color: #9ab7ff;
+  border-color: rgba(154, 183, 255, 0.45);
+}
+
+.workspace-entry-icon-sh,
+.workspace-entry-icon-docker,
+.workspace-entry-icon-file {
+  color: #b3b3b3;
+  border-color: rgba(179, 179, 179, 0.35);
+}
+
 .workspace-entry-name {
   color: #dce7ff;
   text-align: left;
   font-size: 13px;
   line-height: 1.3;
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

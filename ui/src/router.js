@@ -1,12 +1,13 @@
 import { createRouter, createWebHistory } from "vue-router";
-import Jobs from "./pages/Jobs.vue";
-import JobDetail from "./pages/JobDetail.vue";
-import Types from "./pages/Types.vue";
-import CreateJob from "./pages/CreateJob.vue";
-import Chat from "./pages/Chat.vue";
-import Schedules from "./pages/Schedules.vue";
-import Settings from "./pages/Settings.vue";
-import Memory from "./pages/Memory.vue";
+
+const Jobs = () => import("./pages/Jobs.vue");
+const JobDetail = () => import("./pages/JobDetail.vue");
+const Types = () => import("./pages/Types.vue");
+const CreateJob = () => import("./pages/CreateJob.vue");
+const Chat = () => import("./pages/Chat.vue");
+const Schedules = () => import("./pages/Schedules.vue");
+const Settings = () => import("./pages/Settings.vue");
+const Memory = () => import("./pages/Memory.vue");
 
 export default createRouter({
   history: createWebHistory("/ui/"),
