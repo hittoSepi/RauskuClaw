@@ -44,6 +44,8 @@ jspm_packages/
 # SQL Data folder
 data/*
 !data/.gitkeep
+workspace/*
+!workspace/.gitkeep
 
 # Snowpack dependency directory (https://snowpack.dev/)
 web_modules/

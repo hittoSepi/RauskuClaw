@@ -171,7 +171,7 @@ function currentMaxLogId() {
 }
 
 function streamUrl() {
-  const key = sessionStorage.getItem("openclaw_api_key") || "";
+  const key = sessionStorage.getItem("rauskuclaw_api_key") || "";
   const qs = new URLSearchParams();
   if (key) qs.set("api_key", key);
   const sinceLogId = currentMaxLogId();

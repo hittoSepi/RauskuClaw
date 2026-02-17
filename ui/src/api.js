@@ -1,9 +1,9 @@
 function getKey() {
-  return sessionStorage.getItem("openclaw_api_key") || "";
+  return sessionStorage.getItem("rauskuclaw_api_key") || "";
 }
 
 export function setKey(k) {
-  sessionStorage.setItem("openclaw_api_key", k || "");
+  sessionStorage.setItem("rauskuclaw_api_key", k || "");
 }
 
 export function getApiBase() {
@@ -42,6 +42,58 @@ async function request(path, { method = "GET", body, headers = {} } = {}) {
 
 export const api = {
   ping: () => request("/v1/ping"),
+  runtimeProviders: () => request("/v1/runtime/providers"),
+  uiPrefs: (scope = "default") => request(`/v1/ui-prefs?scope=${encodeURIComponent(String(scope || "default"))}`),
+  saveUiPrefs: (scope = "default", prefs = {}) => request(`/v1/ui-prefs?scope=${encodeURIComponent(String(scope || "default"))}`, {
+    method: "PUT",
+    body: { prefs }
+  }),
+  workspaceFiles: (params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return request("/v1/workspace/files" + (qs ? `?${qs}` : ""));
+  },
+  workspaceFile: (filePath) => request(`/v1/workspace/file?path=${encodeURIComponent(String(filePath || ""))}`),
+  createWorkspaceEntry: (payload) => request("/v1/workspace/create", {
+    method: "POST",
+    body: payload
+  }),
+  moveWorkspaceEntry: (payload) => request("/v1/workspace/move", {
+    method: "PATCH",
+    body: payload
+  }),
+  uploadWorkspaceFile: (payload) => request("/v1/workspace/upload", {
+    method: "POST",
+    body: payload
+  }),
+  updateWorkspaceFile: (filePath, content) => request("/v1/workspace/file", {
+    method: "PUT",
+    body: { path: String(filePath || ""), content: String(content ?? "") }
+  }),
+  deleteWorkspaceFile: (filePath) => request(`/v1/workspace/file?path=${encodeURIComponent(String(filePath || ""))}`, {
+    method: "DELETE"
+  }),
+  downloadWorkspaceFile: async (filePath) => {
+    const key = getKey();
+    const headers = key ? { "x-api-key": key } : {};
+    const resp = await fetch(
+      getApiBase() + `/v1/workspace/download?path=${encodeURIComponent(String(filePath || ""))}`,
+      { method: "GET", headers }
+    );
+    if (!resp.ok) {
+      const text = await resp.text();
+      let data = null;
+      try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+      const msg = data?.error?.message || resp.statusText || "Download failed";
+      const err = new Error(msg);
+      err.status = resp.status;
+      err.data = data;
+      throw err;
+    }
+    const blob = await resp.blob();
+    const cd = String(resp.headers.get("content-disposition") || "");
+    const match = cd.match(/filename=\"?([^\";]+)\"?/i);
+    return { blob, filename: match?.[1] || "download.bin" };
+  },
   jobTypes: () => request("/v1/job-types"),
   updateJobType: (name, payload) => request(`/v1/job-types/${encodeURIComponent(name)}`, {
     method: "PATCH",
@@ -58,6 +110,37 @@ export const api = {
   job: (id) => request(`/v1/jobs/${encodeURIComponent(id)}`),
   jobLogs: (id, tail = 200) => request(`/v1/jobs/${encodeURIComponent(id)}/logs?tail=${tail}`),
   cancelJob: (id) => request(`/v1/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
+  schedules: (params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return request("/v1/schedules" + (qs ? `?${qs}` : ""));
+  },
+  schedule: (id) => request(`/v1/schedules/${encodeURIComponent(id)}`),
+  createSchedule: (payload) => request("/v1/schedules", {
+    method: "POST",
+    body: payload
+  }),
+  updateSchedule: (id, payload) => request(`/v1/schedules/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: payload
+  }),
+  deleteSchedule: (id) => request(`/v1/schedules/${encodeURIComponent(id)}`, {
+    method: "DELETE"
+  }),
+  memoryScopes: (params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return request("/v1/memory/scopes" + (qs ? `?${qs}` : ""));
+  },
+  memories: (params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return request("/v1/memory" + (qs ? `?${qs}` : ""));
+  },
+  memoryReset: ({ scope } = {}) => request("/v1/memory/reset", {
+    method: "POST",
+    body: {
+      confirm: true,
+      ...(scope ? { scope: String(scope) } : {})
+    }
+  }),
   createJob: (payload, { idempotencyKey } = {}) => request("/v1/jobs", {
     method: "POST",
     body: payload,

@@ -1,18 +1,21 @@
 <template>
-  <div class="container">
-    <div class="row" style="margin-bottom: 14px">
-      <div style="font-size: 18px; font-weight: 700">OpenClaw UI</div>
+  <div class="container app-shell">
+    <div class="row app-topbar">
+      <div class="app-brand">RauskuClaw</div>
+      <div class="row app-nav">
+        <router-link to="/chat">Chat</router-link>
+        <router-link to="/settings">Settings</router-link>
+      </div>
       <div class="spacer"></div>
-      <router-link to="/jobs">Jobs</router-link>
-      <router-link to="/jobs/new">Create Job</router-link>
-      <router-link to="/types">Types</router-link>
-      <div class="spacer"></div>
-      <input class="input" style="min-width: 320px"
-             v-model="key" placeholder="x-api-key (stored in session only)" />
+      <input
+        class="input app-key-input"
+        v-model="key"
+        placeholder="x-api-key (stored in session only)"
+      />
       <button class="btn primary" @click="saveKey">Save</button>
     </div>
 
-    <div class="card" style="margin-bottom: 14px">
+    <div class="card app-status">
       <div class="row">
         <div class="badge" :class="pingOk ? 'ok' : 'err'">
           API: {{ pingOk ? "ok" : "nope" }}
@@ -25,7 +28,9 @@
       </div>
     </div>
 
-    <router-view />
+    <div class="app-content">
+      <router-view />
+    </div>
   </div>
 </template>
 
@@ -33,7 +38,7 @@
 import { ref, onMounted } from "vue";
 import { api, setKey } from "./api.js";
 
-const key = ref(sessionStorage.getItem("openclaw_api_key") || "");
+const key = ref(sessionStorage.getItem("rauskuclaw_api_key") || "");
 const pingOk = ref(false);
 
 function saveKey() {
@@ -54,5 +59,46 @@ onMounted(ping);
 </script>
 
 <style scoped>
-a { margin-left: 12px; }
+.app-shell {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.app-topbar {
+  margin-bottom: 14px;
+  gap: 14px;
+}
+
+.app-brand {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+}
+
+.app-nav {
+  gap: 12px;
+}
+
+.app-key-input {
+  min-width: 320px;
+}
+
+.app-status {
+  margin-bottom: 14px;
+}
+
+.app-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+@media (max-width: 980px) {
+  .app-key-input {
+    min-width: 210px;
+    flex: 1;
+  }
+}
 </style>

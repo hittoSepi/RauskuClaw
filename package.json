@@ -1,0 +1,20 @@
+{
+  "name": "rauskuclaw",
+  "version": "0.1.0",
+  "private": true,
+  "description": "RauskuClaw operator CLI",
+  "type": "commonjs",
+  "bin": {
+    "rauskuclaw": "./bin/rauskuclaw.js"
+  },
+  "scripts": {
+    "test": "node --test cli/test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ink": "^6.7.0",
+    "react": "^19.2.4"
+  }
+}

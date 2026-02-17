@@ -10,8 +10,26 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 
-API_KEY="${API_KEY:-$(grep '^API_KEY=' "$ENV_FILE" | cut -d= -f2-)}"
-CALLBACK_ALLOWLIST="${CALLBACK_ALLOWLIST:-$(grep '^CALLBACK_ALLOWLIST=' "$ENV_FILE" | cut -d= -f2- || true)}"
+read_env_value() {
+  local key="$1"
+  local file="$2"
+  local line value
+  line="$(grep -E "^[[:space:]]*${key}=" "$file" | tail -n1 || true)"
+  value="${line#*=}"
+  value="${value//$'\r'/}"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  if [[ "${value:0:1}" == "\"" && "${value: -1}" == "\"" ]]; then
+    value="${value:1:${#value}-2}"
+  fi
+  if [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]]; then
+    value="${value:1:${#value}-2}"
+  fi
+  printf '%s' "$value"
+}
+
+API_KEY="${API_KEY:-$(read_env_value "API_KEY" "$ENV_FILE")}"
+CALLBACK_ALLOWLIST="${CALLBACK_ALLOWLIST:-$(read_env_value "CALLBACK_ALLOWLIST" "$ENV_FILE")}"
 
 if [[ -z "${API_KEY}" ]]; then
   echo "API_KEY is empty. Set API_KEY in $ENV_FILE or export API_KEY."
@@ -85,13 +103,65 @@ poll_job_until_terminal() {
   return 1
 }
 
-echo "[1/5] Health + ping"
+patch_type_enabled() {
+  local type_name="$1"
+  local enabled_value="$2"
+  mapfile -t patch_resp < <(request PATCH "/v1/job-types/$type_name" "{\"enabled\":$enabled_value}")
+  [[ "${patch_resp[0]}" == "200" ]] || {
+    echo "Failed to patch type '$type_name': ${patch_resp[0]}"
+    echo "${patch_resp[1]}"
+    exit 1
+  }
+}
+
+get_type_enabled() {
+  local type_name="$1"
+  mapfile -t list_resp < <(request GET "/v1/job-types")
+  [[ "${list_resp[0]}" == "200" ]] || {
+    echo "Failed to list job types: ${list_resp[0]}"
+    echo "${list_resp[1]}"
+    exit 1
+  }
+  printf '%s' "${list_resp[1]}" | node -e '
+    const fs = require("fs");
+    const typeName = process.argv[1];
+    const data = JSON.parse(fs.readFileSync(0, "utf8"));
+    const t = (data.types || []).find(x => x && x.name === typeName);
+    if (!t) process.exit(3);
+    process.stdout.write(t.enabled ? "true" : "false");
+  ' "$type_name"
+}
+
+ORIG_REPORT_ENABLED=""
+ORIG_DATA_FETCH_ENABLED=""
+CLEANUP_DONE=0
+cleanup() {
+  if [[ "$CLEANUP_DONE" == "1" ]]; then
+    return
+  fi
+  CLEANUP_DONE=1
+  if [[ -n "$ORIG_REPORT_ENABLED" ]]; then
+    patch_type_enabled "report.generate" "$ORIG_REPORT_ENABLED" || true
+  fi
+  if [[ -n "$ORIG_DATA_FETCH_ENABLED" ]]; then
+    patch_type_enabled "data.fetch" "$ORIG_DATA_FETCH_ENABLED" || true
+  fi
+}
+trap cleanup EXIT
+
+echo "[1/6] Health + ping"
 health="$(curl -sS "$API_BASE/health")"
 printf '%s\n' "$health" | json_get "ok" >/dev/null
 mapfile -t ping_lines < <(request GET "/v1/ping")
 [[ "${ping_lines[0]}" == "200" ]] || { echo "Ping failed: ${ping_lines[0]}"; exit 1; }
 
-echo "[2/5] Idempotency: same key + same payload"
+echo "[2/6] Ensure required types are enabled for smoke scenarios"
+ORIG_REPORT_ENABLED="$(get_type_enabled "report.generate")"
+ORIG_DATA_FETCH_ENABLED="$(get_type_enabled "data.fetch")"
+patch_type_enabled "report.generate" "true"
+patch_type_enabled "data.fetch" "true"
+
+echo "[3/6] Idempotency: same key + same payload"
 idem_key="m1-$(date +%s)-$RANDOM"
 payload='{"type":"report.generate","input":{"report":"m1-idem"},"priority":7,"timeout_sec":20,"max_attempts":1,"tags":["m1","idempotency"]}'
 mapfile -t first_create < <(request POST "/v1/jobs" "$payload" "$idem_key")
@@ -108,14 +178,14 @@ idempotent="$(printf '%s' "${second_create[1]}" | json_get "idempotent")"
   exit 1
 }
 
-echo "[3/5] Idempotency: same key + different payload => conflict"
+echo "[4/6] Idempotency: same key + different payload => conflict"
 payload_conflict='{"type":"report.generate","input":{"report":"m1-idem-conflict"},"priority":1,"timeout_sec":20,"max_attempts":1}'
 mapfile -t conflict_resp < <(request POST "/v1/jobs" "$payload_conflict" "$idem_key")
 [[ "${conflict_resp[0]}" == "409" ]] || { echo "Expected 409 conflict, got ${conflict_resp[0]}"; echo "${conflict_resp[1]}"; exit 1; }
 conflict_code="$(printf '%s' "${conflict_resp[1]}" | json_get "error.code")"
 [[ "$conflict_code" == "IDEMPOTENCY_CONFLICT" ]] || { echo "Unexpected conflict code: $conflict_code"; exit 1; }
 
-echo "[4/5] Retry behavior (data.fetch should fail and retry)"
+echo "[5/6] Retry behavior (data.fetch should fail and retry)"
 retry_payload='{"type":"data.fetch","input":{"url":"https://example.com"},"priority":5,"timeout_sec":5,"max_attempts":2,"tags":["m1","retry"]}'
 mapfile -t retry_create < <(request POST "/v1/jobs" "$retry_payload")
 [[ "${retry_create[0]}" == "201" ]] || { echo "Retry create failed: ${retry_create[0]}"; echo "${retry_create[1]}"; exit 1; }
@@ -137,7 +207,7 @@ if ! printf '%s' "${retry_logs[1]}" | grep -q 'Re-queued for retry'; then
   exit 1
 fi
 
-echo "[5/5] Callback allowlist scenario"
+echo "[6/6] Callback allowlist scenario"
 if [[ -n "${CALLBACK_ALLOWLIST// }" ]]; then
   callback_payload='{"type":"report.generate","input":{"report":"m1-callback"},"priority":5,"timeout_sec":20,"max_attempts":1,"callback_url":"https://not-in-allowlist.invalid/hook","tags":["m1","callback"]}'
   mapfile -t callback_create < <(request POST "/v1/jobs" "$callback_payload")

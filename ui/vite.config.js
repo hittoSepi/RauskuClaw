@@ -3,6 +3,6 @@ import vue from "@vitejs/plugin-vue";
 
 export default defineConfig({
   plugins: [vue()],
-  // Hosted at https://openclaw.rausku.com/ui/
+  // Hosted at https://rauskuclaw.rausku.com/ui/
   base: "/ui/",
 });

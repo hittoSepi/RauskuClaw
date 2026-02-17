@@ -1,6 +1,6 @@
 const { startWorker } = require("./worker");
 
-console.log("[openclaw-worker] starting worker loop");
+console.log("[rauskuclaw-worker] starting worker loop");
 startWorker();
 
 // keep process alive

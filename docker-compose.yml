@@ -1,50 +1,72 @@
 services:
-  openclaw-api:
+  rauskuclaw-api:
     build:
       context: ./app
       dockerfile: Dockerfile
-    container_name: openclaw-api
+    container_name: rauskuclaw-api
     restart: unless-stopped
     env_file:
       - .env
     environment:
       - RAUSKUCLAW_CONFIG_PATH=${RAUSKUCLAW_CONFIG_PATH:-/config/rauskuclaw.json}
-      - DB_PATH=${DB_PATH:-/data/openclaw.sqlite}
+      - DB_PATH=${DB_PATH:-/data/rauskuclaw.sqlite}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://rauskuclaw-ollama:11434}
       - DEPLOY_TARGET_ALLOWLIST=${DEPLOY_TARGET_ALLOWLIST:-staging}
       - CALLBACK_ALLOWLIST=${CALLBACK_ALLOWLIST:-}
+    depends_on:
+      - rauskuclaw-ollama
     volumes:
       - ./data:/data
+      - ./workspace:/workspace
       - ./rauskuclaw.json:/config/rauskuclaw.json:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       # API only on localhost (host Nginx exposes it)
       - "127.0.0.1:3001:3001"
     command: ["node", "server.js"]
 
-  openclaw-worker:
+  rauskuclaw-worker:
     build:
       context: ./app
       dockerfile: Dockerfile
-    container_name: openclaw-worker
+    container_name: rauskuclaw-worker
     restart: unless-stopped
     env_file:
       - .env
     environment:
       - RAUSKUCLAW_CONFIG_PATH=${RAUSKUCLAW_CONFIG_PATH:-/config/rauskuclaw.json}
-      - DB_PATH=${DB_PATH:-/data/openclaw.sqlite}
+      - DB_PATH=${DB_PATH:-/data/rauskuclaw.sqlite}
       - WORKER_POLL_MS=${WORKER_POLL_MS:-300}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://rauskuclaw-ollama:11434}
       - DEPLOY_TARGET_ALLOWLIST=${DEPLOY_TARGET_ALLOWLIST:-staging}
       - CALLBACK_ALLOWLIST=${CALLBACK_ALLOWLIST:-}
+    depends_on:
+      - rauskuclaw-ollama
     volumes:
       - ./data:/data
+      - ./workspace:/workspace
       - ./rauskuclaw.json:/config/rauskuclaw.json:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command: ["node", "worker-only.js"]
 
-  openclaw-ui:
+  rauskuclaw-ollama:
+    image: ollama/ollama:latest
+    container_name: rauskuclaw-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+
+  rauskuclaw-ui:
     build:
       context: ./ui
       dockerfile: Dockerfile
-    container_name: openclaw-ui
+    container_name: rauskuclaw-ui
     restart: unless-stopped
     ports:
       # UI on localhost, host Nginx maps /ui/ to this
       - "127.0.0.1:3002:8080"
+
+volumes:
+  ollama_data:

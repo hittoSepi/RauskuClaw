@@ -18,7 +18,26 @@
         <option v-for="t in typeNames" :key="t" :value="t">{{ t }}</option>
       </select>
 
-      <button class="btn" @click="clearFilters" :disabled="loading || (!status && !type)">Clear filters</button>
+      <input
+        class="input"
+        v-model.trim="queue"
+        placeholder="queue (default)"
+        style="width: 170px"
+      />
+
+      <input
+        class="input"
+        v-model.trim="q"
+        placeholder="search job id or type"
+        style="min-width: 220px"
+      />
+
+      <label style="color: var(--muted); font-size: 13px">
+        auto refresh
+        <input type="checkbox" v-model="autoRefresh" />
+      </label>
+
+      <button class="btn" @click="clearFilters" :disabled="loading || (!status && !type && !queue)">Clear filters</button>
       <button class="btn" @click="load" :disabled="loading">{{ loading ? "Refreshing..." : "Refresh" }}</button>
     </div>
 
@@ -28,27 +47,29 @@
           <th>created</th>
           <th>type</th>
           <th>status</th>
+          <th>queue</th>
           <th>attempts</th>
           <th>priority</th>
           <th>id</th>
         </tr>
       </thead>
       <tbody>
-        <tr v-for="j in jobs" :key="j.id">
+        <tr v-for="j in visibleJobs" :key="j.id">
           <td style="color: var(--muted)">{{ j.created_at }}</td>
           <td>{{ j.type }}</td>
           <td>
             <span class="badge" :class="badgeClass(j.status)">{{ j.status }}</span>
           </td>
+          <td>{{ j.queue || "default" }}</td>
           <td>{{ j.attempts }}/{{ j.max_attempts }}</td>
           <td>{{ j.priority }}</td>
           <td>
-            <router-link :to="`/jobs/${j.id}`">{{ j.id }}</router-link>
+            <router-link :to="`/settings/jobs/${j.id}`">{{ j.id }}</router-link>
           </td>
         </tr>
-        <tr v-if="jobs.length === 0">
-          <td colspan="6" style="color: var(--muted)">
-            {{ status || type ? "No jobs found with current filters." : "No jobs found." }}
+        <tr v-if="visibleJobs.length === 0">
+          <td colspan="7" style="color: var(--muted)">
+            {{ status || type || queue || q ? "No jobs found with current filters/search." : "No jobs found." }}
           </td>
         </tr>
       </tbody>
@@ -56,6 +77,8 @@
 
     <div style="margin-top: 10px; color: var(--muted); font-size: 13px">
       {{ loading ? "Loading jobs..." : `Loaded ${jobs.length} jobs` }}
+      <span v-if="visibleJobs.length !== jobs.length"> | showing {{ visibleJobs.length }}</span>
+      <span v-if="lastLoadedAt"> | last refresh: {{ lastLoadedAt }}</span>
     </div>
 
     <div v-if="err" style="margin-top: 12px; color: #ff7b72">
@@ -70,14 +93,27 @@ import { api } from "../api.js";
 
 const status = ref("");
 const type = ref("");
+const queue = ref("");
+const q = ref("");
+const autoRefresh = ref(false);
 const jobs = ref([]);
 const types = ref([]);
 const err = ref("");
 const loading = ref(false);
+const lastLoadedAt = ref("");
 let lastLoadId = 0;
 let filterTimer = null;
+let autoTimer = null;
 
 const typeNames = computed(() => types.value.map(t => t.name));
+const visibleJobs = computed(() => {
+  const needle = q.value.trim().toLowerCase();
+  if (!needle) return jobs.value;
+  return jobs.value.filter((j) =>
+    String(j.id || "").toLowerCase().includes(needle) ||
+    String(j.type || "").toLowerCase().includes(needle)
+  );
+});
 
 function badgeClass(s) {
   if (s === "succeeded") return "ok";
@@ -96,12 +132,14 @@ async function load() {
       api.jobs({
         status: status.value || undefined,
         type: type.value || undefined,
+        queue: queue.value || undefined,
         limit: 100
       })
     ]);
     if (loadId !== lastLoadId) return;
     types.value = t.types || [];
     jobs.value = r.jobs || [];
+    lastLoadedAt.value = new Date().toLocaleTimeString();
   } catch (e) {
     if (loadId !== lastLoadId) return;
     err.value = e.message || String(e);
@@ -113,14 +151,27 @@ async function load() {
 function clearFilters() {
   status.value = "";
   type.value = "";
+  queue.value = "";
 }
 
-watch([status, type], () => {
+watch([status, type, queue], () => {
   if (filterTimer) clearTimeout(filterTimer);
   filterTimer = setTimeout(() => {
     filterTimer = null;
     load();
   }, 180);
+});
+
+watch(autoRefresh, (enabled) => {
+  if (autoTimer) {
+    clearInterval(autoTimer);
+    autoTimer = null;
+  }
+  if (enabled) {
+    autoTimer = setInterval(() => {
+      load();
+    }, 5000);
+  }
 });
 
 onMounted(async () => {
@@ -129,5 +180,6 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   if (filterTimer) clearTimeout(filterTimer);
+  if (autoTimer) clearInterval(autoTimer);
 });
 </script>

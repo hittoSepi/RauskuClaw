@@ -1,16 +1,20 @@
 {
-  "name": "openclaw-api",
+  "name": "rauskuclaw-api",
   "version": "0.1.0",
   "private": true,
   "type": "commonjs",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
+    "@openai/codex-sdk": "^0.101.0",
+    "@sqliteai/sqlite-vector": "^0.9.90",
     "ajv": "^8.18.0",
     "ajv-formats": "^3.0.1",
     "better-sqlite3": "^11.7.0",
+    "cron-parser": "^5.5.0",
     "express": "^4.19.2",
     "morgan": "^1.10.0"
   }

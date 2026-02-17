@@ -67,6 +67,15 @@
       </tbody>
     </table>
 
+    <div v-if="statusMsg" style="margin-top: 10px; color: #7ee787; font-size: 13px">
+      {{ statusMsg }}
+    </div>
+
+    <div style="margin-top: 8px; color: var(--muted); font-size: 12px">
+      {{ loading ? "Loading job types..." : `Loaded ${types.length} job types` }}
+      <span v-if="lastActionAt"> | last action: {{ lastActionAt }}</span>
+    </div>
+
     <div v-if="err" style="margin-top: 12px; color: #ff7b72">
       {{ err }}
     </div>
@@ -79,7 +88,9 @@ import { api } from "../api.js";
 
 const types = ref([]);
 const err = ref("");
+const statusMsg = ref("");
 const loading = ref(false);
+const lastActionAt = ref("");
 
 function toEditable(t) {
   return {
@@ -129,14 +140,18 @@ function resetType(t) {
   t.default_timeout_sec = t._original.default_timeout_sec;
   t.default_max_attempts = t._original.default_max_attempts;
   t.localErr = "";
+  statusMsg.value = `Reset unsaved changes for '${t.name}'.`;
+  lastActionAt.value = new Date().toLocaleTimeString();
 }
 
 async function load() {
   err.value = "";
+  statusMsg.value = "";
   loading.value = true;
   try {
     const r = await api.jobTypes();
     types.value = (r.types || []).map(toEditable);
+    lastActionAt.value = new Date().toLocaleTimeString();
   } catch (e) {
     err.value = e.message || String(e);
   } finally {
@@ -146,6 +161,8 @@ async function load() {
 
 async function saveType(t) {
   t.localErr = "";
+  err.value = "";
+  statusMsg.value = "";
   if (!isValid(t)) {
     t.localErr = "Invalid values: handler, timeout (1..3600), attempts (1..10)";
     return;
@@ -166,6 +183,8 @@ async function saveType(t) {
     t.default_timeout_sec = updated.default_timeout_sec;
     t.default_max_attempts = updated.default_max_attempts;
     t._original = updated._original;
+    statusMsg.value = `Saved '${t.name}' successfully.`;
+    lastActionAt.value = new Date().toLocaleTimeString();
   } catch (e) {
     t.localErr = e.message || String(e);
     err.value = t.localErr;

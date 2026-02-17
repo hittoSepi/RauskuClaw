@@ -1,16 +1,33 @@
 # MEMORY
 
-Last updated: 2026-02-16
+Last updated: 2026-02-17
 
 ## Current Milestone Status
-- M1 (Reliable Core Runner): mostly complete
-- M2 (Tooling + Job Type Management UX): in progress
-- M3 (Provider Integration): not started
-- M4 (Memory + Automation Foundations): not started
+- M1 (Reliable Core Runner): complete
+- M2 (Tooling + Job Type Management UX): complete
+- M3 (Provider Integration): complete
+- M4 (Memory + Automation Foundations): complete
 
 ## Completed So Far
+- Completed backlog item "Multi-queue foundation (phase 1)":
+  - added `queue` support in job API and persistence:
+    - `POST /v1/jobs` accepts optional `queue`
+    - `GET /v1/jobs` supports `queue` filtering
+    - job idempotency hash now includes queue
+  - worker queue consumption can be scoped with:
+    - `WORKER_QUEUE_ALLOWLIST` env
+    - `worker.queue.allowlist_env` / `worker.queue.default_allowed` config
+  - updated docs/config wiring:
+    - `.env.example`, `rauskuclaw.json`, `docs/CONFIG.md`, `README.md`, CLI setup prompts
+  - added queue API regression tests:
+    - `app/test/jobs_queue_api.test.js`
+  - fixed migration ordering bug for legacy DBs:
+    - queue index creation now happens safely after adding `jobs.queue` column
 - Added live SSE stream endpoint usage in UI Job Detail (`/v1/jobs/:id/stream`).
 - Added M1 smoke script: `scripts/m1-smoke.sh` (health/auth, idempotency, retry, callback allowlist checks).
+  - Added M3 provider smoke script: `scripts/m3-smoke.sh` (provider type enable + deterministic provider failure paths with `PROVIDER_*` error code assertions).
+  - Added M3 provider success-mode smoke path (`M3_SMOKE_SUCCESS=1` / `rauskuclaw smoke --suite m3 --success`) for repeatable provider success verification.
+  - Hardened M1 smoke setup by auto-enabling required baseline types (`report.generate`, `data.fetch`) for deterministic runs.
 - Added job type edit UX on `/types`:
   - enable/disable
   - handler edit
@@ -26,11 +43,18 @@ Last updated: 2026-02-16
 - Unified operator feedback in Create/Detail:
   - success/status messages for create/cancel/refresh actions
   - visible "last action/last refresh" timestamps
+- Unified operator feedback in Types:
+  - success/status messages for save/reset/refresh actions
+  - visible "last action" timestamp
 - Improved `Jobs` list operator UX:
   - auto-refresh on filter changes (debounced)
   - loading state + refresh disable
   - clear filters action
   - stale-request guard to avoid out-of-order updates
+- Extended `Jobs` inspection ergonomics:
+  - quick search by job id/type
+  - optional timed auto-refresh (5s)
+  - last refresh timestamp + shown/loaded counts
 - Security hardening:
   - auth no longer fail-open when `API_KEY` is empty
   - default now denies with `503 AUTH_NOT_CONFIGURED`
@@ -46,6 +70,201 @@ Last updated: 2026-02-16
   - Ajv-based validation at startup
   - schema file: `app/config.schema.json`
   - invalid config fails fast on API/worker startup
+- Added config regression tests:
+  - `app/test/config.test.js` (valid load, env precedence, schema fail-fast)
+  - test script in `app/package.json` (`npm test`)
+- Started provider integration scaffold:
+  - provider boundary: `app/providers/index.js`
+  - OpenAI implementation: `app/providers/openai.js`
+  - worker support for `builtin:provider.openai.chat`
+  - seeded `ai.chat.generate` type (disabled by default)
+  - OpenAI config surface in `.env.example` + `rauskuclaw.json` + docs
+- Added Codex OSS provider path:
+  - implementation: `app/providers/codex_oss.js`
+  - worker support for `builtin:provider.codex.oss.chat`
+  - seeded `codex.chat.generate` type (disabled by default)
+  - Codex OSS config surface in `.env.example` + `rauskuclaw.json` + docs
+  - explicit no-paid-fallback path for local inference startup
+  - provider errors now include stable `code` values (`PROVIDER_*`) and optional `details` payload
+  - worker now logs/stores provider failure `code/details` in job logs and `error_json`
+  - added OpenAI provider unit tests (`app/test/openai.test.js`) for success, timeout, HTTP, and config failures
+  - updated Codex OSS provider tests to assert explicit `PROVIDER_*` codes for disabled/config/exec/timeout/not-found paths
+  - Codex CLI runtime now uses `--sandbox workspace-write` and supports dedicated mounted workspace path (`CODEX_OSS_WORKDIR=/workspace`)
+  - Docker Compose now mounts repo `./workspace` into API/worker containers at `/workspace` for agent-accessible writable files
+  - Codex provider hardened for online stability:
+    - transient retry/backoff for stream disconnects (`CODEX_OSS_TRANSIENT_RETRIES`, `CODEX_OSS_TRANSIENT_BACKOFF_MS`)
+    - command preview + auth mode metadata in provider logs/details
+    - provider now ignores `OPENAI_BASE_URL`/`OPENAI_API_KEY` env when Codex auth mode is `chatgpt` to avoid backend override conflicts
+  - Container runtime fix for Codex networking/TLS:
+    - added `ca-certificates` + `update-ca-certificates` in `app/Dockerfile`
+    - configured `/etc/gai.conf` IPv4 precedence to avoid broken IPv6-first resolution paths
+    - validated `codex exec` success from worker container after rebuild
+  - M3 closeout validation:
+    - provider success-path verified with consecutive `rauskuclaw smoke --suite m3 --success` runs
+- Added operator CLI v1:
+  - binary command: `rauskuclaw` (root npm bin, install via `npm link`)
+  - commands: setup/start/stop/restart/status/logs/smoke/config/help/version
+  - interactive setup wizard writes `.env` with key defaults and preserves unknown entries
+  - node:test coverage for parser, env writer, command mapping, and command integration stubs
+  - added `doctor` command (`rauskuclaw doctor [--json]`) for dependency checks (docker compose/daemon, codex CLI, local provider, `.env`)
+  - doctor now supports `--fix-hints` for actionable remediation suggestions on failed checks
+  - improved interactive setup wizard:
+    - Ink/React terminal UI with colors
+    - keyboard-selectable boolean options (`(x) True / ( ) False`) for auth/provider toggles
+    - setup now syncs key values into `rauskuclaw.json` in addition to `.env`
+  - all CLI commands now share Ink-based header UI in interactive terminals (logo + command name)
+  - CI/non-TTY safe fallback to plain output (`RAUSKUCLAW_UI=plain` override for local plain mode)
+  - logs command expanded with `--since` and `--security` mode for scanner/probe pattern analysis
+  - logs command now supports `--json` in security mode (`logs ... --security --json`) with structured counts/samples and clean error JSON
+  - added `docs/CLI.md` documenting CLI JSON output contracts and exit code behavior
+  - added machine-readable output support:
+    - `rauskuclaw status --json`
+    - `rauskuclaw config [show|validate|path] --json`
+    - `rauskuclaw start --json`
+    - `rauskuclaw stop --json`
+    - `rauskuclaw restart --json`
+    - `rauskuclaw smoke --json`
+    - `rauskuclaw smoke --suite m1|m3 --json`
+  - JSON modes now suppress command prelude noise for cleaner script consumption
+  - added destructive memory cleanup command:
+    - `rauskuclaw memory reset --yes [--scope <scope>] [--api <baseUrl>] [--json]`
+    - calls `POST /v1/memory/reset` with explicit confirm flag
+    - supports scoped reset or full memory reset
+
+- Added host Nginx hardening rule:
+  - blocks common scanner probe paths (`.env`, `.git`, `@fs`, aws credential paths, terraform secret files) with `444` before API proxy.
+- Started M4 memory foundation:
+  - added `memories` table and indexes in SQLite migration
+  - added authenticated memory API endpoints:
+    - `GET /v1/memory`
+    - `GET /v1/memory/scopes` (scope-level aggregate stats)
+    - `POST /v1/memory` (upsert by `scope` + `key`)
+    - `GET /v1/memory/:id`
+    - `DELETE /v1/memory/:id`
+  - supports optional TTL via `ttl_sec` (`expires_at` is stored and honored by reads)
+- Implemented M4 Phase 1 semantic memory path:
+  - new config surface for vector memory:
+    - `MEMORY_VECTOR_ENABLED`
+    - `OLLAMA_BASE_URL`
+    - `OLLAMA_EMBED_MODEL`
+    - `OLLAMA_EMBED_TIMEOUT_MS`
+    - `SQLITE_VECTOR_EXTENSION_PATH`
+    - `MEMORY_SEARCH_TOP_K_DEFAULT`
+    - `MEMORY_SEARCH_TOP_K_MAX`
+    - `MEMORY_EMBED_QUEUE_TYPE`
+  - added `memory_vectors` table + embedding lifecycle columns on `memories`:
+    - `embedding_status`, `embedding_error_json`, `embedded_at`
+  - added sqlite-vector integration module (`app/memory/vector_store.js`) with startup fail-fast when enabled + extension missing
+  - added Ollama embedding client (`app/memory/ollama_embed.js`) with typed error codes
+  - added deterministic memory projection helper (`app/memory/projection.js`)
+  - added worker handler `builtin:memory.embed.sync` + seeded type `system.memory.embed.sync`
+  - updated `POST /v1/memory` to mark rows pending and enqueue async embedding job
+  - added `POST /v1/memory/search` with scope readiness checks and vector top-k retrieval
+  - added M4 smoke suite script (`scripts/m4-smoke.sh`) and CLI support `rauskuclaw smoke --suite m4`
+  - added unit tests for Ollama embed + vector store modules
+  - added API integration tests for memory endpoints (`app/test/memory_api.test.js`):
+    - CRUD + TTL behavior
+    - search disabled/unavailable/success paths
+- Implemented M4 first chat integration for memory context:
+  - new worker memory context builder module (`app/memory/chat_context.js`)
+  - provider chat jobs accept optional `input.memory`:
+    - `scope` (required)
+    - `query` (optional, falls back to prompt/latest user message)
+    - `top_k`
+    - `required`
+  - worker behavior:
+    - injects retrieved memory context before provider call when available
+    - continues without context when unavailable and `required=false`
+    - fails deterministically with `MEMORY_CONTEXT_UNAVAILABLE` when `required=true`
+  - provider result metadata includes `memory_context` summary when applied
+  - added unit tests for chat context parsing/build/injection (`app/test/chat_context.test.js`)
+  - added UI controls for memory context in:
+    - `/ui/chat` (`ui/src/pages/Chat.vue`)
+    - `/ui/jobs/new` (`ui/src/pages/CreateJob.vue`)
+  - validated end-to-end with `rauskuclaw smoke --suite m4 --json`
+  - hardened M4 smoke schedule step to auto-create/enable `report.generate` type when missing/disabled
+  - Chat UI now also supports memory write-back input (`memory_write`) for assistant replies:
+    - scope/key/ttl/required controls in `/chat`
+    - provider chat jobs can persist assistant output directly into memory without manual API calls
+  - Chat UI session persistence:
+    - `/chat` state now persists in `sessionStorage` (messages, draft, selected type, memory settings)
+    - switching to `/settings` and back no longer clears active chat session
+  - Added UI-level chat simplification + developer toggle:
+    - new Settings flags:
+      - `Dev mode` (shows debug notices and advanced chat controls)
+      - `Chat memory enabled by default`
+      - `Chat memory write-back enabled by default`
+    - non-dev chat view hides extra tuning controls and uses Settings defaults
+- Added M4 recurrence/scheduler foundation:
+  - DB table `job_schedules` for recurring dispatch metadata
+  - scheduler module (`app/scheduler.js`) with due-claim + dispatch logic
+  - worker integration for periodic dispatch (`SCHEDULER_ENABLED`, `SCHEDULER_BATCH_SIZE`)
+  - cadence mode now supports both fixed intervals and cron expressions (`cron-parser`)
+  - cron timezone is configurable via `SCHEDULER_CRON_TZ` / `worker.scheduler.cron_timezone`
+  - API endpoints:
+    - `GET /v1/schedules`
+    - `POST /v1/schedules`
+    - `GET /v1/schedules/:id`
+    - `PATCH /v1/schedules/:id`
+    - `DELETE /v1/schedules/:id`
+  - scheduler unit tests (`app/test/scheduler.test.js`)
+  - UI schedule management page (`/ui/schedules`) for create/list/update/delete/run-now flows
+  - M4 smoke script extended with schedule dispatch verification (`/v1/schedules` -> `/v1/jobs/:id`)
+- Added new Chat UI page (`/chat`) for operator-agent conversation:
+  - chat messages are executed via chat-capable job types (`codex.chat.generate` / `ai.chat.generate`)
+  - agent can suggest executable jobs with fenced `rausku_jobs` JSON block
+  - UI supports one-click creation of suggested jobs (or optional auto-create)
+- M4 runtime stabilization updates:
+  - moved Ollama to dedicated Compose service `rauskuclaw-ollama` (persistent `ollama_data` volume)
+  - standardized embedding model naming to `embeddinggemma:300m-qat-q8_0` across config/docs/tests
+  - reset stale vector state from earlier 32-dimension test data and revalidated 768-dimension embedding flow
+- Post-M4 follow-up implemented:
+  - added opt-in chat provider memory write-back (`input.memory_write`) in worker runtime
+  - write-back stores provider `output_text` into memory with source metadata
+  - supports `required=true` deterministic failure path with `MEMORY_WRITE_UNAVAILABLE`
+  - added unit tests: `app/test/writeback.test.js`
+  - expanded Chat workspace panel to operational file manager MVP:
+    - list/read/edit/download/upload/delete
+    - create file/folder and rename/move endpoints + UI actions
+    - hidden entries in list: `.codex-home`, `.gitkeep`
+    - editor keyboard shortcuts: `Ctrl/Cmd+S` save, `Esc` cancel
+    - upload UX supports drag-and-drop and multiple files per action
+    - explorer UX polish:
+      - drag-and-drop target moved directly to workspace file list area
+      - active file row highlight in file list when preview is open
+      - compact list spacing + full-row clickable items
+      - workspace explorer/preview height split tuned to roughly 1/3 + 2/3
+  - improved chat suggested-job execution feedback:
+    - when creating suggested jobs from chat, UI now waits each created job to terminal status
+    - chat stream receives per-job result messages (success output or failure/error details)
+  - extended M4 smoke with provider chat write-back verification:
+    - `scripts/m4-smoke.sh` now creates a provider chat job with `memory_write.required=true`
+    - asserts `job.result.memory_write.scope/key` and verifies row exists in `/v1/memory?scope=...`
+    - guarded by `M4_SMOKE_CHAT_WRITEBACK` (default `1`; set `0` to skip)
+  - simplified primary UI navigation and introduced settings hub:
+    - top bar now exposes only `Chat` and `Settings`
+    - added `/settings` page with sub-navigation for:
+      - jobs (`/settings/jobs`)
+      - create job (`/settings/jobs/new`)
+      - schedules (`/settings/schedules`)
+      - types (`/settings/types`)
+    - kept compatibility redirects from legacy routes (`/jobs`, `/types`, `/schedules`)
+  - added Settings Memory management page (UI):
+    - route: `/settings/memory`
+    - scope list with aggregate totals + embedding status counts + latest update time
+    - scope details view (`View`) listing memory keys + embedding status + updated/expires timestamps
+    - supports reset scope and reset all from same page
+    - uses API methods:
+      - `api.memoryScopes(...)` -> `GET /v1/memory/scopes`
+      - `api.memories(...)` -> `GET /v1/memory`
+      - `api.memoryReset(...)` -> `POST /v1/memory/reset`
+
+- Full acceptance validation pass completed:
+  - `npm test`
+  - `npm --prefix app test`
+  - `rauskuclaw smoke --suite m1 --json`
+  - `rauskuclaw smoke --suite m3 --success --json` (run twice consecutively)
+  - `rauskuclaw smoke --suite m4 --json`
 
 ## Current Runtime/Infra Notes
 - Docker stack builds and runs with:
@@ -56,13 +275,68 @@ Last updated: 2026-02-16
   - `RAUSKUCLAW_CONFIG_PATH`
 
 ## Open Items (Next)
-- Continue M2 UI polish:
-  - Create/Detail views: refine operator feedback consistency
-- Add tests for config loader + schema validation behavior:
-  - valid config passes
-  - invalid config fails fast with clear error output
-  - env override precedence cases
-- Decide whether `callbacks.enabled` should actively disable callback posts in worker (currently metadata/config contract exists, behavior still driven by allowlist logic).
+- Post-M4 backlog:
+  - multi-queue / tenant isolation strategy.
+
+## Latest Operational Decision (2026-02-17)
+- Cleared legacy memory test data from runtime DB (all `m4-smoke-*` scopes removed).
+- Decision: skip manual legacy backfill command for now and continue with clean memory state.
+- Re-validated with `rauskuclaw smoke --suite m4 --json` after cleanup.
+
+## Latest Work (2026-02-17)
+- Completed backlog item "Structured metrics and alerts pipeline":
+  - added runtime metric event storage table: `metrics_events`
+  - added metric instrumentation for API + worker core flows:
+    - job create/cancel/idempotency-hit
+    - job claim/success/retry/failure
+    - callback delivered/failed/skipped/blocked
+    - scheduler dispatch/tick failures
+  - added runtime metrics endpoint:
+    - `GET /v1/runtime/metrics`
+    - includes windowed counters + job status snapshot + active alerts
+  - added initial runtime alerts:
+    - `QUEUE_STALLED`
+    - `HIGH_FAILURE_RATE`
+  - added observability config/env controls:
+    - `observability.metrics.*`
+    - `METRICS_ENABLED`
+    - `METRICS_RETENTION_DAYS`
+    - `ALERT_WINDOW_SEC`
+    - `ALERT_QUEUE_STALLED_SEC`
+    - `ALERT_FAILURE_RATE_PCT`
+    - `ALERT_FAILURE_RATE_MIN_COMPLETED`
+  - added API integration test:
+    - `app/test/runtime_metrics.test.js`
+- Completed backlog item "Callback signing/verification scheme":
+  - worker callback delivery now supports optional HMAC signing
+  - env/config controls:
+    - `CALLBACK_SIGNING_ENABLED`
+    - `CALLBACK_SIGNING_SECRET`
+    - `CALLBACK_SIGNING_TOLERANCE_SEC`
+    - `callbacks.signing.*` in `rauskuclaw.json`
+  - callback headers when enabled:
+    - `x-rauskuclaw-timestamp`
+    - `x-rauskuclaw-signature` (`v1=<sha256-hmac>`)
+  - fail-safe behavior:
+    - if signing is enabled but secret missing, callback is skipped and warning logged
+  - added verification helper module:
+    - `app/callback_signing.js` (`verifyCallbackSignature`)
+  - added unit tests:
+    - `app/test/callback_signing.test.js`
+- Started backlog item "Advanced authN/authZ model (beyond single API key)".
+- Implemented API multi-key auth support:
+  - `API_KEYS_JSON` env override
+  - `api.auth.keys` config schema support
+  - per-key `role` (`admin`, `read`) and optional `sse` flag
+- Added write-route authorization guard:
+  - read-only keys can call GET/HEAD/OPTIONS routes
+  - mutating routes return `403 FORBIDDEN` for read-only keys
+- Maintained backwards compatibility:
+  - legacy `API_KEY` still works as admin fallback when multi-key config is absent
+- Added test coverage:
+  - `app/test/auth_api.test.js` validates legacy auth and read/admin role behavior
+- Validation run:
+  - `npm --prefix app test` passed
 
 ## Key Files Changed Recently
 - Backend:
@@ -71,6 +345,18 @@ Last updated: 2026-02-16
   - `app/db.js`
   - `app/config.js`
   - `app/config.schema.json`
+  - `app/memory/settings.js`
+  - `app/memory/ollama_embed.js`
+  - `app/memory/vector_store.js`
+  - `app/memory/projection.js`
+  - `app/memory/errors.js`
+  - `app/memory/chat_context.js`
+  - `app/test/ollama_embed.test.js`
+  - `app/test/vector_store.test.js`
+  - `app/test/memory_api.test.js`
+  - `app/test/chat_context.test.js`
+  - `app/scheduler.js`
+  - `app/test/scheduler.test.js`
 - Frontend:
   - `ui/src/pages/Types.vue`
   - `ui/src/pages/CreateJob.vue`
@@ -83,3 +369,5 @@ Last updated: 2026-02-16
   - `.env.example`
   - `docker-compose.yml`
   - `rauskuclaw.json`
+  - `scripts/m4-smoke.sh`
+  - `docs/CLI.md`

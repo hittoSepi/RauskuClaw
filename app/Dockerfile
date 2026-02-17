@@ -2,7 +2,11 @@ FROM node:20-bookworm-slim
 
 WORKDIR /app
 
-RUN apt-get update   && apt-get install -y --no-install-recommends python3 make g++   && rm -rf /var/lib/apt/lists/*
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates python3 make g++ \
+  && update-ca-certificates \
+  && printf '%s\n' 'precedence ::ffff:0:0/96 100' >> /etc/gai.conf \
+  && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
 RUN npm install --omit=dev

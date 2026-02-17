@@ -29,17 +29,82 @@
       "priority": 5,
       "timeout_sec": 120,
       "max_attempts": 1
+    },
+    "scheduler": {
+      "enabled": true,
+      "batch_size": 5,
+      "cron_timezone": "UTC"
+    },
+    "queue": {
+      "allowlist_env": "WORKER_QUEUE_ALLOWLIST",
+      "default_allowed": [
+        "default"
+      ]
     }
   },
   "database": {
     "engine": "sqlite",
-    "path": "/data/openclaw.sqlite",
+    "path": "/data/rauskuclaw.sqlite",
     "mode": "wal"
   },
   "callbacks": {
     "enabled": true,
     "allowlist_env": "CALLBACK_ALLOWLIST",
-    "allowlist_behavior_when_empty": "allow_all"
+    "allowlist_behavior_when_empty": "allow_all",
+    "signing": {
+      "enabled": false,
+      "secret_env": "CALLBACK_SIGNING_SECRET",
+      "tolerance_sec": 300
+    }
+  },
+  "observability": {
+    "metrics": {
+      "enabled": true,
+      "retention_days": 7,
+      "alerts": {
+        "window_sec": 3600,
+        "queue_stalled_sec": 900,
+        "failure_rate_pct": 50,
+        "failure_rate_min_completed": 20
+      }
+    }
+  },
+  "providers": {
+    "openai": {
+      "enabled": false,
+      "api_key_env": "OPENAI_API_KEY",
+      "base_url": "https://api.openai.com",
+      "model": "gpt-4.1-mini",
+      "timeout_ms": 30000
+    },
+    "codex_oss": {
+      "enabled": false,
+      "exec_mode": "online",
+      "local_provider": "ollama",
+      "timeout_ms": 60000,
+      "working_directory": "/workspace",
+      "cli_path": "codex"
+    }
+  },
+  "memory": {
+    "vector": {
+      "enabled": false,
+      "sqlite": {
+        "extension_path": ""
+      }
+    },
+    "embedding": {
+      "queue_type": "system.memory.embed.sync",
+      "ollama": {
+        "base_url": "http://rauskuclaw-ollama:11434",
+        "model": "embeddinggemma:300m-qat-q8_0",
+        "timeout_ms": 15000
+      }
+    },
+    "search": {
+      "top_k_default": 10,
+      "top_k_max": 100
+    }
   },
   "handlers": {
     "deploy": {
@@ -55,9 +120,9 @@
     "host_port": 3002
   },
   "runtime": {
-    "api_container": "openclaw-api",
-    "worker_container": "openclaw-worker",
-    "ui_container": "openclaw-ui",
+    "api_container": "rauskuclaw-api",
+    "worker_container": "rauskuclaw-worker",
+    "ui_container": "rauskuclaw-ui",
     "compose_file": "docker-compose.yml"
   },
   "env_mapping": {
@@ -66,7 +131,40 @@
     "API_AUTH_DISABLED": "api.auth.allow_without_key_when",
     "DB_PATH": "database.path",
     "WORKER_POLL_MS": "worker.poll_interval_ms",
+    "WORKER_QUEUE_ALLOWLIST": "worker.queue.allowlist_env",
+    "SCHEDULER_ENABLED": "worker.scheduler.enabled",
+    "SCHEDULER_BATCH_SIZE": "worker.scheduler.batch_size",
+    "SCHEDULER_CRON_TZ": "worker.scheduler.cron_timezone",
     "DEPLOY_TARGET_ALLOWLIST": "handlers.deploy.allowlist_env",
-    "CALLBACK_ALLOWLIST": "callbacks.allowlist_env"
+    "CALLBACK_ALLOWLIST": "callbacks.allowlist_env",
+    "CALLBACK_SIGNING_ENABLED": "callbacks.signing.enabled",
+    "CALLBACK_SIGNING_SECRET": "callbacks.signing.secret_env",
+    "CALLBACK_SIGNING_TOLERANCE_SEC": "callbacks.signing.tolerance_sec",
+    "METRICS_ENABLED": "observability.metrics.enabled",
+    "METRICS_RETENTION_DAYS": "observability.metrics.retention_days",
+    "ALERT_WINDOW_SEC": "observability.metrics.alerts.window_sec",
+    "ALERT_QUEUE_STALLED_SEC": "observability.metrics.alerts.queue_stalled_sec",
+    "ALERT_FAILURE_RATE_PCT": "observability.metrics.alerts.failure_rate_pct",
+    "ALERT_FAILURE_RATE_MIN_COMPLETED": "observability.metrics.alerts.failure_rate_min_completed",
+    "OPENAI_ENABLED": "providers.openai.enabled",
+    "OPENAI_API_KEY": "providers.openai.api_key_env",
+    "OPENAI_BASE_URL": "providers.openai.base_url",
+    "OPENAI_MODEL": "providers.openai.model",
+    "OPENAI_TIMEOUT_MS": "providers.openai.timeout_ms",
+    "CODEX_OSS_ENABLED": "providers.codex_oss.enabled",
+    "CODEX_OSS_MODEL": "providers.codex_oss.model",
+    "CODEX_EXEC_MODE": "providers.codex_oss.exec_mode",
+    "CODEX_OSS_LOCAL_PROVIDER": "providers.codex_oss.local_provider",
+    "CODEX_OSS_TIMEOUT_MS": "providers.codex_oss.timeout_ms",
+    "CODEX_OSS_WORKDIR": "providers.codex_oss.working_directory",
+    "CODEX_CLI_PATH": "providers.codex_oss.cli_path",
+    "MEMORY_VECTOR_ENABLED": "memory.vector.enabled",
+    "OLLAMA_BASE_URL": "memory.embedding.ollama.base_url",
+    "OLLAMA_EMBED_MODEL": "memory.embedding.ollama.model",
+    "OLLAMA_EMBED_TIMEOUT_MS": "memory.embedding.ollama.timeout_ms",
+    "SQLITE_VECTOR_EXTENSION_PATH": "memory.vector.sqlite.extension_path",
+    "MEMORY_SEARCH_TOP_K_DEFAULT": "memory.search.top_k_default",
+    "MEMORY_SEARCH_TOP_K_MAX": "memory.search.top_k_max",
+    "MEMORY_EMBED_QUEUE_TYPE": "memory.embedding.queue_type"
   }
 }
