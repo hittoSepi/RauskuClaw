@@ -1,0 +1,58 @@
+name: Playwright CI
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+concurrency:
+  group: playwright-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  API_BASE_URL: ${{ secrets.API_BASE_URL }}
+  X_API_KEY: ${{ secrets.X_API_KEY }}
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ui-v2
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui-v2/package-lock.json
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps
+
+      - name: Run Playwright
+        run: npx playwright test
+        env:
+          CI: "true"
+
+      - name: Upload Playwright HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: ui-v2/playwright-report
+          retention-days: 30
+
+      - name: Upload test artifacts (traces/videos/screenshots)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: ui-v2/test-results
+          retention-days: 30
