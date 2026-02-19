@@ -13,12 +13,17 @@ const SETTINGS = {
   searchTopKMax: 100
 };
 
-function makeDb(availabilityRow) {
+function makeDb(availabilityRow, recentRows = []) {
   return {
     prepare(sql) {
       if (String(sql).includes("COUNT(*) AS total_count")) {
         return {
           get: () => availabilityRow
+        };
+      }
+      if (String(sql).includes("FROM memories m") && String(sql).includes("ORDER BY m.updated_at DESC")) {
+        return {
+          all: () => recentRows
         };
       }
       throw new Error(`Unexpected SQL in mock db: ${sql}`);
@@ -85,15 +90,30 @@ test("buildChatMemoryContext fails with deterministic code when vector mode is d
   );
 });
 
-test("buildChatMemoryContext fails when scope embeddings are not ready", async () => {
-  await assert.rejects(
-    buildChatMemoryContext({
-      db: makeDb({ total_count: 3, pending_count: 1, failed_count: 0, missing_vector_count: 0 }),
-      settings: SETTINGS,
-      request: { scope: "chat.ops", query: "q", topK: 5, required: false }
-    }),
-    (e) => e && e.code === "MEMORY_CONTEXT_UNAVAILABLE"
-  );
+test("buildChatMemoryContext falls back to recent scope rows when vectors are sparse", async () => {
+  const context = await buildChatMemoryContext({
+    db: makeDb(
+      { total_count: 3, pending_count: 1, failed_count: 0, missing_vector_count: 1 },
+      [
+        {
+          id: "m-pending",
+          scope: "chat.ops",
+          key: "chat.line.user.1",
+          value_json: JSON.stringify({ text: "latest pending note" }),
+          tags_json: JSON.stringify(["chat", "recent"]),
+          updated_at: "2026-02-18T00:00:01.000Z",
+          embedding_status: "pending"
+        }
+      ]
+    ),
+    settings: SETTINGS,
+    request: { scope: "chat.ops", query: "pending note", topK: 5, required: false },
+    embed: async () => ({ embedding: [0.1, 0.2, 0.3], model: "mock-embed" }),
+    search: () => []
+  });
+  assert.equal(context.matches.length, 1);
+  assert.equal(context.matches[0].id, "m-pending");
+  assert.equal(context.matches[0].embedding_status, "pending");
 });
 
 test("buildChatMemoryContext returns matches and instruction text", async () => {
@@ -120,6 +140,48 @@ test("buildChatMemoryContext returns matches and instruction text", async () => 
   assert.equal(context.embeddingModel, "mock-embed");
   assert.match(context.instruction, /scope=chat\.ops/);
   assert.match(context.instruction, /release\.last/);
+});
+
+test("buildChatMemoryContext prioritizes newest matches before top_k truncation", async () => {
+  const context = await buildChatMemoryContext({
+    db: makeDb({ total_count: 3, pending_count: 0, failed_count: 0, missing_vector_count: 0 }),
+    settings: SETTINGS,
+    request: { scope: "chat.ops", query: "release notes", topK: 2, required: false },
+    embed: async () => ({ embedding: [0.1, 0.2, 0.3], model: "mock-embed" }),
+    search: () => [
+      {
+        id: "m-old",
+        scope: "chat.ops",
+        key: "release.old",
+        value_json: JSON.stringify({ text: "old note" }),
+        tags_json: JSON.stringify(["release"]),
+        updated_at: "2026-02-16T00:00:00.000Z",
+        distance: 0.01
+      },
+      {
+        id: "m-newest",
+        scope: "chat.ops",
+        key: "release.newest",
+        value_json: JSON.stringify({ text: "newest note" }),
+        tags_json: JSON.stringify(["release"]),
+        updated_at: "2026-02-18T00:00:00.000Z",
+        distance: 0.2
+      },
+      {
+        id: "m-newer",
+        scope: "chat.ops",
+        key: "release.newer",
+        value_json: JSON.stringify({ text: "newer note" }),
+        tags_json: JSON.stringify(["release"]),
+        updated_at: "2026-02-17T00:00:00.000Z",
+        distance: 0.1
+      }
+    ]
+  });
+
+  assert.equal(context.matches.length, 2);
+  assert.equal(context.matches[0].id, "m-newest");
+  assert.equal(context.matches[1].id, "m-newer");
 });
 
 test("injectChatMemoryContext prepends system message when chat history exists", () => {

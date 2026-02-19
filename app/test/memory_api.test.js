@@ -378,6 +378,7 @@ test("schedule CRUD endpoints support interval and cron cadence", async (t) => {
       body: {
         name: "test schedule",
         type: "report.generate",
+        queue: "alpha",
         interval_sec: 60,
         start_in_sec: 0,
         input: { hello: "world" },
@@ -387,16 +388,21 @@ test("schedule CRUD endpoints support interval and cron cadence", async (t) => {
     assert.equal(created.status, 201, created.text);
     assert.equal(created.json?.ok, true);
     assert.equal(created.json?.schedule?.type, "report.generate");
+    assert.equal(created.json?.schedule?.queue, "alpha");
     assert.equal(created.json?.schedule?.enabled, true);
     assert.equal(created.json?.schedule?.interval_sec, 60);
     assert.equal(created.json?.schedule?.cron, null);
     const scheduleId = created.json?.schedule?.id;
     assert.equal(typeof scheduleId, "string");
 
-    const listed = await requestJson(api.baseUrl, "/v1/schedules?enabled=1&limit=50");
+    const listed = await requestJson(api.baseUrl, "/v1/schedules?enabled=1&queue=alpha&limit=50");
     assert.equal(listed.status, 200, listed.text);
     assert.equal(Array.isArray(listed.json?.schedules), true);
     assert.equal(listed.json.schedules.some((s) => s.id === scheduleId), true);
+
+    const invalidQueueFilter = await requestJson(api.baseUrl, "/v1/schedules?queue=bad queue&limit=50");
+    assert.equal(invalidQueueFilter.status, 400, invalidQueueFilter.text);
+    assert.equal(invalidQueueFilter.json?.error?.code, "VALIDATION_ERROR");
 
     const patchedCron = await requestJson(api.baseUrl, `/v1/schedules/${scheduleId}`, {
       method: "PATCH",
@@ -409,11 +415,12 @@ test("schedule CRUD endpoints support interval and cron cadence", async (t) => {
 
     const patchedInterval = await requestJson(api.baseUrl, `/v1/schedules/${scheduleId}`, {
       method: "PATCH",
-      body: { interval_sec: 120 }
+      body: { interval_sec: 120, queue: "beta" }
     });
     assert.equal(patchedInterval.status, 200, patchedInterval.text);
     assert.equal(patchedInterval.json?.schedule?.cron, null);
     assert.equal(patchedInterval.json?.schedule?.interval_sec, 120);
+    assert.equal(patchedInterval.json?.schedule?.queue, "beta");
 
     const single = await requestJson(api.baseUrl, `/v1/schedules/${scheduleId}`);
     assert.equal(single.status, 200, single.text);

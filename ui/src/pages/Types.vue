@@ -22,12 +22,12 @@
           <td>{{ t.name }}</td>
           <td>
             <label class="row" style="gap: 6px">
-              <input type="checkbox" v-model="t.enabled" />
+              <input type="checkbox" v-model="t.enabled" :disabled="isReadOnly" />
               <span class="badge" :class="t.enabled ? 'ok' : 'err'">{{ t.enabled }}</span>
             </label>
           </td>
           <td>
-            <input class="input" v-model="t.handler" style="width: 100%; min-width: 230px" />
+            <input class="input" v-model="t.handler" style="width: 100%; min-width: 230px" :disabled="isReadOnly" />
           </td>
           <td>
             <input
@@ -36,6 +36,7 @@
               min="1"
               max="3600"
               v-model.number="t.default_timeout_sec"
+              :disabled="isReadOnly"
               style="width: 110px"
             />
           </td>
@@ -46,15 +47,16 @@
               min="1"
               max="10"
               v-model.number="t.default_max_attempts"
+              :disabled="isReadOnly"
               style="width: 90px"
             />
           </td>
           <td>
             <div class="row" style="gap: 6px">
-              <button class="btn primary" @click="saveType(t)" :disabled="!isDirty(t) || !isValid(t) || t.saving">
+              <button class="btn primary" @click="saveType(t)" :disabled="isReadOnly || !isDirty(t) || !isValid(t) || t.saving">
                 {{ t.saving ? "Saving..." : "Save" }}
               </button>
-              <button class="btn" @click="resetType(t)" :disabled="!isDirty(t) || t.saving">Reset</button>
+              <button class="btn" @click="resetType(t)" :disabled="isReadOnly || !isDirty(t) || t.saving">Reset</button>
             </div>
             <div v-if="t.localErr" style="margin-top: 6px; color: #ff7b72; font-size: 12px">
               {{ t.localErr }}
@@ -75,6 +77,9 @@
       {{ loading ? "Loading job types..." : `Loaded ${types.length} job types` }}
       <span v-if="lastActionAt"> | last action: {{ lastActionAt }}</span>
     </div>
+    <div v-if="isReadOnly" style="margin-top: 8px; color: #f59e0b; font-size: 12px">
+      Read-only API key active: job type updates are disabled.
+    </div>
 
     <div v-if="err" style="margin-top: 12px; color: #ff7b72">
       {{ err }}
@@ -85,12 +90,14 @@
 <script setup>
 import { ref, onMounted } from "vue";
 import { api } from "../api.js";
+import { refreshAuthState, useAuthState } from "../auth_state.js";
 
 const types = ref([]);
 const err = ref("");
 const statusMsg = ref("");
 const loading = ref(false);
 const lastActionAt = ref("");
+const { isReadOnly } = useAuthState();
 
 function toEditable(t) {
   return {
@@ -160,6 +167,10 @@ async function load() {
 }
 
 async function saveType(t) {
+  if (isReadOnly.value) {
+    t.localErr = "Read-only API key: updates are disabled.";
+    return;
+  }
   t.localErr = "";
   err.value = "";
   statusMsg.value = "";
@@ -193,5 +204,8 @@ async function saveType(t) {
   }
 }
 
-onMounted(load);
+onMounted(async () => {
+  await refreshAuthState();
+  await load();
+});
 </script>

@@ -14,6 +14,7 @@ const { runConfig } = require("./commands/config");
 const { runDoctor } = require("./commands/doctor");
 const { runCodex } = require("./commands/codex");
 const { runMemory } = require("./commands/memory");
+const { runAuth } = require("./commands/auth");
 const { renderHeader } = require("./lib/ui");
 
 function parseArgv(argv) {
@@ -58,6 +59,7 @@ async function runCli(argv, { startDir = process.cwd(), execFn = runCommand } = 
     if (normalizedCommand === "doctor") return runDoctor(ctx, args);
     if (normalizedCommand === "codex") return runCodex(ctx, args);
     if (normalizedCommand === "memory") return runMemory(ctx, args);
+    if (normalizedCommand === "auth") return runAuth(ctx, args);
 
     error(`Unknown command: ${normalizedCommand}`);
     runHelp();

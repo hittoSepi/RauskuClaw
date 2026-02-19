@@ -46,16 +46,27 @@ function recordMetric(db, name, opts = {}) {
   return true;
 }
 
-function collectMetricCounters(db, windowSec) {
+function buildQueueFilterClause(queueScope = null) {
+  if (!Array.isArray(queueScope) || queueScope.length < 1) return { clause: "", params: [] };
+  const placeholders = queueScope.map(() => "?").join(",");
+  return {
+    clause: ` AND json_extract(labels_json, '$.queue') IN (${placeholders})`,
+    params: queueScope
+  };
+}
+
+function collectMetricCounters(db, windowSec, queueScope = null) {
   const safeWindowSec = Math.max(60, Math.min(7 * 24 * 3600, Number(windowSec) || 3600));
   const sinceIso = new Date(Date.now() - (safeWindowSec * 1000)).toISOString();
+  const queueFilter = buildQueueFilterClause(queueScope);
   const rows = db.prepare(`
     SELECT name, SUM(value) AS total
     FROM metrics_events
     WHERE ts >= ?
+    ${queueFilter.clause}
     GROUP BY name
     ORDER BY name ASC
-  `).all(sinceIso);
+  `).all(sinceIso, ...queueFilter.params);
   const counters = {};
   for (const row of rows) {
     counters[row.name] = Number(row.total || 0);
@@ -63,12 +74,17 @@ function collectMetricCounters(db, windowSec) {
   return { windowSec: safeWindowSec, sinceIso, counters };
 }
 
-function getJobStatusSnapshot(db) {
+function getJobStatusSnapshot(db, queueScope = null) {
+  const queueSql = Array.isArray(queueScope) && queueScope.length > 0
+    ? ` WHERE queue IN (${queueScope.map(() => "?").join(",")})`
+    : "";
+  const queueParams = Array.isArray(queueScope) && queueScope.length > 0 ? queueScope : [];
   const rows = db.prepare(`
     SELECT status, COUNT(*) AS total
     FROM jobs
+    ${queueSql}
     GROUP BY status
-  `).all();
+  `).all(...queueParams);
   const snapshot = {
     queued: 0,
     running: 0,
@@ -83,17 +99,22 @@ function getJobStatusSnapshot(db) {
   return snapshot;
 }
 
-function buildRuntimeAlerts(db, settings, windowSec) {
+function buildRuntimeAlerts(db, settings, windowSec, queueScope = null) {
   const alerts = [];
   const safeWindowSec = Math.max(60, Math.min(7 * 24 * 3600, Number(windowSec) || settings.alertWindowSec));
+  const queueSql = Array.isArray(queueScope) && queueScope.length > 0
+    ? ` AND queue IN (${queueScope.map(() => "?").join(",")})`
+    : "";
+  const queueParams = Array.isArray(queueScope) && queueScope.length > 0 ? queueScope : [];
 
   const oldestQueued = db.prepare(`
     SELECT id, created_at
     FROM jobs
     WHERE status = 'queued'
+    ${queueSql}
     ORDER BY created_at ASC
     LIMIT 1
-  `).get();
+  `).get(...queueParams);
   if (oldestQueued && oldestQueued.created_at) {
     const ageSec = Math.max(0, Math.floor((Date.now() - new Date(oldestQueued.created_at).getTime()) / 1000));
     if (ageSec >= settings.alertQueueStalledSec) {
@@ -115,8 +136,9 @@ function buildRuntimeAlerts(db, settings, windowSec) {
     SELECT status, COUNT(*) AS total
     FROM jobs
     WHERE status IN ('succeeded', 'failed') AND updated_at >= ?
+    ${queueSql}
     GROUP BY status
-  `).all(sinceIso);
+  `).all(sinceIso, ...queueParams);
   let succeeded = 0;
   let failed = 0;
   for (const row of completedRows) {

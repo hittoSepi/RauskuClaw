@@ -2,6 +2,7 @@ const os = require("os");
 const crypto = require("crypto");
 const { db } = require("./db");
 const { getConfig, envOrConfig, envIntOrConfig, envBoolOrConfig, splitCsv } = require("./config");
+const { writeJobToWorkspaceIndex } = require("./jobs_workspace_index");
 const { runProviderHandler } = require("./providers");
 const { getMemoryVectorSettings } = require("./memory/settings");
 const { embedText } = require("./memory/ollama_embed");
@@ -12,6 +13,18 @@ const { parseChatMemoryWriteRequest, applyChatMemoryWriteback } = require("./mem
 const { dispatchDueSchedules } = require("./scheduler");
 const { HEADER_TIMESTAMP, HEADER_SIGNATURE, getCallbackSigningSettings, signCallbackPayload } = require("./callback_signing");
 const { recordMetric } = require("./metrics");
+const { generateReport } = require("./handlers/report");
+const { buildDeployPlan } = require("./handlers/deploy");
+const { generateComponentFiles } = require("./handlers/component");
+const { generateFrontpageLayout } = require("./handlers/layout");
+const { runToolExec } = require("./handlers/tool_exec");
+const { runDataFetch } = require("./handlers/data_fetch");
+const { runDataFileRead } = require("./handlers/data_file_read");
+const { runDataFileWrite } = require("./handlers/data_file_write");
+const { runFileSearch } = require("./handlers/file_search");
+const { runFindInFiles } = require("./handlers/find_in_files");
+const { runWorkflow } = require("./handlers/workflow_run");
+const { runWebSearch } = require("./handlers/web_search");
 
 const workerIdEnvName = String(getConfig("worker.worker_id_source.env", "WORKER_ID"));
 const workerId = process.env[workerIdEnvName] || os.hostname();
@@ -27,6 +40,7 @@ const workerQueueAllowlist = (() => {
   return normalized.length > 0 ? normalized : ["default"];
 })();
 const memoryVectorSettings = getMemoryVectorSettings();
+const workspaceRootForIndex = String(getConfig("providers.codex_oss.working_directory", "/workspace")).trim() || "/workspace";
 
 function nowIso() {
   return new Date().toISOString();
@@ -44,8 +58,92 @@ function safeJsonParse(s) {
   try { return JSON.parse(s); } catch { return null; }
 }
 
+function splitCsvListOrArray(value) {
+  if (Array.isArray(value)) {
+    return value.map((x) => String(x || "").trim()).filter(Boolean);
+  }
+  return splitCsv(String(value || ""));
+}
+
+function normalizeRuntimeToolsOverrides(raw) {
+  const src = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const toolExec = src.tool_exec && typeof src.tool_exec === "object" ? src.tool_exec : {};
+  const dataFetch = src.data_fetch && typeof src.data_fetch === "object" ? src.data_fetch : {};
+  const webSearch = src.web_search && typeof src.web_search === "object" ? src.web_search : {};
+
+  const out = {
+    tool_exec: {},
+    data_fetch: {},
+    web_search: {}
+  };
+
+  if (typeof toolExec.enabled === "boolean") out.tool_exec.enabled = toolExec.enabled;
+  if (toolExec.allowlist != null) out.tool_exec.allowlist = splitCsvListOrArray(toolExec.allowlist);
+  if (Number.isInteger(Number(toolExec.timeout_ms))) out.tool_exec.timeout_ms = Number(toolExec.timeout_ms);
+
+  if (typeof dataFetch.enabled === "boolean") out.data_fetch.enabled = dataFetch.enabled;
+  if (dataFetch.allowlist != null) out.data_fetch.allowlist = splitCsvListOrArray(dataFetch.allowlist);
+  if (Number.isInteger(Number(dataFetch.timeout_ms))) out.data_fetch.timeout_ms = Number(dataFetch.timeout_ms);
+  if (Number.isInteger(Number(dataFetch.max_bytes))) out.data_fetch.max_bytes = Number(dataFetch.max_bytes);
+
+  if (typeof webSearch.enabled === "boolean") out.web_search.enabled = webSearch.enabled;
+  if (typeof webSearch.provider === "string") out.web_search.provider = String(webSearch.provider || "").trim().toLowerCase();
+  if (Number.isInteger(Number(webSearch.timeout_ms))) out.web_search.timeout_ms = Number(webSearch.timeout_ms);
+  if (Number.isInteger(Number(webSearch.max_results))) out.web_search.max_results = Number(webSearch.max_results);
+  if (typeof webSearch.base_url === "string") out.web_search.base_url = String(webSearch.base_url || "").trim();
+  if (typeof webSearch.brave_api_key === "string") out.web_search.brave_api_key = String(webSearch.brave_api_key || "").trim();
+  if (typeof webSearch.brave_endpoint === "string") out.web_search.brave_endpoint = String(webSearch.brave_endpoint || "").trim();
+
+  return out;
+}
+
+let runtimeToolsOverridesCache = { at: 0, value: { tool_exec: {}, data_fetch: {}, web_search: {} } };
+function readRuntimeToolsOverrides() {
+  const now = Date.now();
+  if (now - runtimeToolsOverridesCache.at < 1500) return runtimeToolsOverridesCache.value;
+  const row = db.prepare(`SELECT value_json FROM ui_prefs WHERE scope = ?`).get("runtime_tools");
+  const parsed = row?.value_json ? safeJsonParse(row.value_json) : null;
+  const normalized = normalizeRuntimeToolsOverrides(parsed || {});
+  runtimeToolsOverridesCache = { at: now, value: normalized };
+  return normalized;
+}
+
 function safeJsonStringify(v) {
   return JSON.stringify(v ?? null);
+}
+
+function parseJobDependencies(job) {
+  const input = safeJsonParse(job?.input_json) || {};
+  const raw = input?.depends_on;
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const item of raw) {
+    const id = String(item || "").trim();
+    if (!id) continue;
+    if (!out.includes(id)) out.push(id);
+    if (out.length >= 50) break;
+  }
+  return out;
+}
+
+function resolveDependencyState(depIds) {
+  const ids = Array.isArray(depIds) ? depIds : [];
+  if (ids.length < 1) return { state: "ready", missing: [], failed: [], waiting: [] };
+  const placeholders = ids.map(() => "?").join(", ");
+  const rows = db.prepare(`SELECT id, status FROM jobs WHERE id IN (${placeholders})`).all(...ids);
+  const byId = new Map(rows.map((r) => [String(r.id || ""), String(r.status || "")]));
+  const missing = ids.filter((id) => !byId.has(id));
+  const failed = ids.filter((id) => {
+    const st = byId.get(id);
+    return st === "failed" || st === "cancelled";
+  });
+  const waiting = ids.filter((id) => {
+    const st = byId.get(id);
+    return st && st !== "succeeded" && st !== "failed" && st !== "cancelled";
+  });
+  if (missing.length > 0 || failed.length > 0) return { state: "blocked", missing, failed, waiting };
+  if (waiting.length > 0) return { state: "waiting", missing, failed, waiting };
+  return { state: "ready", missing, failed, waiting };
 }
 
 function recordMetricSafe(name, opts = {}) {
@@ -169,6 +267,7 @@ async function postCallback(job) {
 // --- Builtin handlers ---
 async function runBuiltin(job, handler) {
   const input = safeJsonParse(job.input_json) || {};
+  const runtimeTools = readRuntimeToolsOverrides();
 
   if (handler.startsWith("builtin:provider.")) {
     log(job.id, "info", "Starting provider-backed handler", { handler });
@@ -294,8 +393,8 @@ async function runBuiltin(job, handler) {
 
   if (handler === "builtin:report.generate") {
     log(job.id, "info", "Generating report", { input });
-    await sleep(400);
-    return { report_id: crypto.randomUUID(), summary: "MVP report generated", input };
+    await sleep(200);
+    return generateReport(input);
   }
 
   if (handler === "builtin:memory.embed.sync") {
@@ -379,41 +478,323 @@ async function runBuiltin(job, handler) {
   }
 
   if (handler === "builtin:deploy.run") {
-    log(job.id, "info", "Starting deploy (stub)", { input });
+    log(job.id, "info", "Building deploy dry-run plan", { input });
 
     const allowlistEnvName = String(getConfig("handlers.deploy.allowlist_env", "DEPLOY_TARGET_ALLOWLIST"));
     const fallbackTargets = getConfig("handlers.deploy.default_allowed_targets", ["staging"]);
     const fallbackCsv = Array.isArray(fallbackTargets) ? fallbackTargets.join(",") : "staging";
     const allowedTargets = splitCsv(process.env[allowlistEnvName] || fallbackCsv);
-    const target = input.target || "staging";
-    if (!allowedTargets.includes(target)) {
-      throw new Error(`target not allowed: ${target}`);
-    }
 
-    await sleep(600);
-    log(job.id, "info", "Deploy step completed (stub)", { target });
-
-    return { deployment_id: crypto.randomUUID(), target, message: "Stub deploy completed" };
+    await sleep(250);
+    const plan = buildDeployPlan(input, { allowedTargets });
+    log(job.id, "info", "Deploy dry-run plan ready", {
+      target: plan.target,
+      strategy: plan.strategy,
+      service_count: plan.services.length,
+      dry_run: plan.dry_run
+    });
+    return plan;
   }
 
   if (handler === "builtin:data.fetch") {
-    throw new Error("data.fetch disabled in MVP (SSRF protection)");
+    const enabledEnvName = String(getConfig("handlers.data_fetch.enabled_env", "DATA_FETCH_ENABLED"));
+    const allowlistEnvName = String(getConfig("handlers.data_fetch.allowlist_env", "DATA_FETCH_ALLOWLIST"));
+    const timeoutEnvName = String(getConfig("handlers.data_fetch.timeout_env", "DATA_FETCH_TIMEOUT_MS"));
+    const maxBytesEnvName = String(getConfig("handlers.data_fetch.max_bytes_env", "DATA_FETCH_MAX_BYTES"));
+    const defaultAllowlist = getConfig("handlers.data_fetch.default_allowed_domains", []);
+    const defaultTimeoutMs = Number(getConfig("handlers.data_fetch.default_timeout_ms", 8000)) || 8000;
+    const defaultMaxBytes = Number(getConfig("handlers.data_fetch.default_max_bytes", 65536)) || 65536;
+    const runtimeDataFetch = runtimeTools.data_fetch || {};
+
+    const enabledRaw = String(process.env[enabledEnvName] || "").trim().toLowerCase();
+    const enabledFromEnv = enabledRaw === "1" || enabledRaw === "true" || enabledRaw === "yes";
+    const enabled = typeof runtimeDataFetch.enabled === "boolean" ? runtimeDataFetch.enabled : enabledFromEnv;
+    if (!enabled) {
+      throw new Error(`${enabledEnvName}=1 required for data.fetch`);
+    }
+
+    const envAllowlist = splitCsv(process.env[allowlistEnvName] || "");
+    const allowlist = Array.isArray(runtimeDataFetch.allowlist) && runtimeDataFetch.allowlist.length > 0
+      ? runtimeDataFetch.allowlist
+      : envAllowlist.length > 0
+      ? envAllowlist
+      : (Array.isArray(defaultAllowlist) ? defaultAllowlist.map((x) => String(x || "").trim()).filter(Boolean) : []);
+    if (allowlist.length < 1) {
+      throw new Error(`No allowed fetch domains configured. Set ${allowlistEnvName}.`);
+    }
+
+    const timeoutRaw = Number(process.env[timeoutEnvName]);
+    const maxBytesRaw = Number(process.env[maxBytesEnvName]);
+    const timeoutOverride = Number(runtimeDataFetch.timeout_ms);
+    const maxBytesOverride = Number(runtimeDataFetch.max_bytes);
+    const timeoutMs = Number.isInteger(timeoutRaw) && timeoutRaw >= 200 && timeoutRaw <= 120000
+      ? timeoutRaw
+      : defaultTimeoutMs;
+    const effectiveTimeoutMs = Number.isInteger(timeoutOverride) && timeoutOverride >= 200 && timeoutOverride <= 120000
+      ? timeoutOverride
+      : timeoutMs;
+    const maxBytes = Number.isInteger(maxBytesRaw) && maxBytesRaw >= 512 && maxBytesRaw <= 1024 * 1024
+      ? maxBytesRaw
+      : defaultMaxBytes;
+    const effectiveMaxBytes = Number.isInteger(maxBytesOverride) && maxBytesOverride >= 512 && maxBytesOverride <= 1024 * 1024
+      ? maxBytesOverride
+      : maxBytes;
+
+    log(job.id, "info", "Fetching allowlisted URL", { url: String(input?.url || "") });
+    return await runDataFetch(input, {
+      allowlist,
+      defaultTimeoutMs: effectiveTimeoutMs,
+      defaultMaxBytes: effectiveMaxBytes
+    });
+  }
+
+  if (handler === "builtin:data.file_read") {
+    const enabledEnvName = String(getConfig("handlers.file_read.enabled_env", "DATA_FILE_READ_ENABLED"));
+    const maxBytesEnvName = String(getConfig("handlers.file_read.max_bytes_env", "DATA_FILE_READ_MAX_BYTES"));
+    const defaultMaxBytes = Number(getConfig("handlers.file_read.default_max_bytes", 262144)) || 262144;
+    const rootFromConfig = String(
+      getConfig("handlers.file_read.workspace_root", getConfig("providers.codex_oss.working_directory", "/workspace"))
+    ).trim() || "/workspace";
+    const enabledRaw = String(process.env[enabledEnvName] || "1").trim().toLowerCase();
+    const enabled = enabledRaw === "1" || enabledRaw === "true" || enabledRaw === "yes";
+    if (!enabled) {
+      throw new Error(`${enabledEnvName}=1 required for data.file_read`);
+    }
+    const configuredMaxBytes = Number(process.env[maxBytesEnvName]);
+    const effectiveMaxBytes = Number.isInteger(configuredMaxBytes) && configuredMaxBytes >= 512 && configuredMaxBytes <= 1024 * 1024
+      ? configuredMaxBytes
+      : defaultMaxBytes;
+
+    log(job.id, "info", "Reading workspace file", { path: String(input?.path || input?.file_path || "") });
+    return await runDataFileRead(input, {
+      workspaceRoot: rootFromConfig,
+      defaultMaxBytes: effectiveMaxBytes
+    });
+  }
+
+  if (handler === "builtin:data.write_file") {
+    const enabledEnvName = String(getConfig("handlers.file_write.enabled_env", "DATA_FILE_WRITE_ENABLED"));
+    const maxBytesEnvName = String(getConfig("handlers.file_write.max_bytes_env", "DATA_FILE_WRITE_MAX_BYTES"));
+    const defaultMaxBytes = Number(getConfig("handlers.file_write.default_max_bytes", 1024 * 1024)) || (1024 * 1024);
+    const rootFromConfig = String(
+      getConfig("handlers.file_write.workspace_root", getConfig("providers.codex_oss.working_directory", "/workspace"))
+    ).trim() || "/workspace";
+    const enabledRaw = String(process.env[enabledEnvName] || "1").trim().toLowerCase();
+    const enabled = enabledRaw === "1" || enabledRaw === "true" || enabledRaw === "yes";
+    if (!enabled) {
+      throw new Error(`${enabledEnvName}=1 required for data.write_file`);
+    }
+    const configuredMaxBytes = Number(process.env[maxBytesEnvName]);
+    const effectiveMaxBytes = Number.isInteger(configuredMaxBytes) && configuredMaxBytes >= 512 && configuredMaxBytes <= 10 * 1024 * 1024
+      ? configuredMaxBytes
+      : defaultMaxBytes;
+
+    log(job.id, "info", "Writing workspace file", {
+      path: String(input?.path || input?.file_path || ""),
+      mode: String(input?.mode || "replace"),
+      dry_run: input?.dry_run === true
+    });
+    return await runDataFileWrite(input, {
+      workspaceRoot: rootFromConfig,
+      defaultMaxBytes: effectiveMaxBytes
+    });
+  }
+
+  if (handler === "builtin:tools.file_search") {
+    const rootFromConfig = String(getConfig("providers.codex_oss.working_directory", "/workspace")).trim() || "/workspace";
+    log(job.id, "info", "Searching files in workspace", {
+      query: String(input?.query || input?.q || ""),
+      path: String(input?.path || ".")
+    });
+    return await runFileSearch(input, {
+      workspaceRoot: rootFromConfig,
+      defaultMaxResults: 30
+    });
+  }
+
+  if (handler === "builtin:tools.find_in_files") {
+    const rootFromConfig = String(getConfig("providers.codex_oss.working_directory", "/workspace")).trim() || "/workspace";
+    log(job.id, "info", "Searching text inside workspace files", {
+      query: String(input?.query || input?.q || input?.pattern || ""),
+      path: String(input?.path || "."),
+      files: Array.isArray(input?.files) ? input.files.length : 0
+    });
+    return await runFindInFiles(input, {
+      workspaceRoot: rootFromConfig
+    });
   }
 
   if (handler === "builtin:code.component.generate") {
-    log(job.id, "info", "Generating component skeleton (stub)");
-    await sleep(300);
-    return {
-      files: [
-        { path: "Component.vue", content: "<template><div>TODO</div></template>\n<script setup>\n</script>\n" }
-      ]
-    };
+    log(job.id, "info", "Generating component files", { input });
+    await sleep(180);
+    return generateComponentFiles(input);
   }
 
   if (handler === "builtin:design.frontpage.layout") {
-    log(job.id, "info", "Designing layout (stub)");
-    await sleep(300);
-    return { layout: { sections: ["hero","features","cta","footer"], notes: "MVP layout suggestion" } };
+    log(job.id, "info", "Generating frontpage layout plan", { input });
+    await sleep(180);
+    return generateFrontpageLayout(input);
+  }
+
+  if (handler === "builtin:tool.exec") {
+    const enabledEnvName = String(getConfig("handlers.exec.enabled_env", "TOOL_EXEC_ENABLED"));
+    const allowlistEnvName = String(getConfig("handlers.exec.allowlist_env", "TOOL_EXEC_ALLOWLIST"));
+    const timeoutEnvName = String(getConfig("handlers.exec.timeout_env", "TOOL_EXEC_TIMEOUT_MS"));
+    const defaultAllowed = getConfig("handlers.exec.default_allowed_commands", []);
+    const defaultTimeoutMs = Number(getConfig("handlers.exec.default_timeout_ms", 10000)) || 10000;
+    const runtimeToolExec = runtimeTools.tool_exec || {};
+    const enabledRaw = String(process.env[enabledEnvName] || "").trim().toLowerCase();
+    const enabledFromEnv = enabledRaw === "1" || enabledRaw === "true" || enabledRaw === "yes";
+    const enabled = typeof runtimeToolExec.enabled === "boolean" ? runtimeToolExec.enabled : enabledFromEnv;
+    if (!enabled) {
+      throw new Error(`${enabledEnvName}=1 required for tool.exec`);
+    }
+    const fromEnv = splitCsv(process.env[allowlistEnvName] || "");
+    const allowlist = Array.isArray(runtimeToolExec.allowlist) && runtimeToolExec.allowlist.length > 0
+      ? runtimeToolExec.allowlist
+      : fromEnv.length > 0
+      ? fromEnv
+      : (Array.isArray(defaultAllowed) ? defaultAllowed.map((x) => String(x || "").trim()).filter(Boolean) : []);
+    if (allowlist.length < 1) {
+      throw new Error(`No allowed commands configured. Set ${allowlistEnvName}.`);
+    }
+    const configuredTimeoutRaw = process.env[timeoutEnvName];
+    const configuredTimeout = Number(configuredTimeoutRaw);
+    const timeoutOverride = Number(runtimeToolExec.timeout_ms);
+    const timeoutFromConfig = Number.isInteger(configuredTimeout) && configuredTimeout >= 100 && configuredTimeout <= 120000
+      ? configuredTimeout
+      : defaultTimeoutMs;
+    const effectiveTimeoutMs = Number.isInteger(timeoutOverride) && timeoutOverride >= 100 && timeoutOverride <= 120000
+      ? timeoutOverride
+      : timeoutFromConfig;
+    const workspaceRoot = String(getConfig("providers.codex_oss.working_directory", "/workspace")).trim() || "/workspace";
+
+    log(job.id, "info", "Executing allowlisted tool command", {
+      command: String(input?.command || ""),
+      args: Array.isArray(input?.args) ? input.args.length : 0
+    });
+    const out = await runToolExec(input, {
+      allowlist,
+      defaultTimeoutMs: effectiveTimeoutMs,
+      cwd: workspaceRoot
+    });
+    if (!out.ok) {
+      const reason = out.timed_out ? "tool.exec timeout" : `tool.exec failed with exit ${out.code}`;
+      const e = new Error(reason);
+      e.details = {
+        timed_out: out.timed_out,
+        code: out.code,
+        signal: out.signal,
+        stdout_tail: String(out.stdout || "").slice(-4000),
+        stderr_tail: String(out.stderr || "").slice(-4000),
+        duration_ms: out.duration_ms
+      };
+      throw e;
+    }
+    return {
+      command: String(input?.command || ""),
+      args: Array.isArray(input?.args) ? input.args.map((x) => String(x)) : [],
+      duration_ms: out.duration_ms,
+      stdout: out.stdout,
+      stderr: out.stderr,
+      code: out.code
+    };
+  }
+
+  if (handler === "builtin:tools.web_search") {
+    const enabledEnvName = String(getConfig("handlers.web_search.enabled_env", "WEB_SEARCH_ENABLED"));
+    const providerEnvName = String(getConfig("handlers.web_search.provider_env", "WEB_SEARCH_PROVIDER"));
+    const timeoutEnvName = String(getConfig("handlers.web_search.timeout_env", "WEB_SEARCH_TIMEOUT_MS"));
+    const maxResultsEnvName = String(getConfig("handlers.web_search.max_results_env", "WEB_SEARCH_MAX_RESULTS"));
+    const baseUrlEnvName = String(getConfig("handlers.web_search.base_url_env", "WEB_SEARCH_BASE_URL"));
+    const braveApiKeyEnvName = String(getConfig("handlers.web_search.brave_api_key_env", "WEB_SEARCH_BRAVE_API_KEY"));
+    const braveEndpointEnvName = String(getConfig("handlers.web_search.brave_endpoint_env", "WEB_SEARCH_BRAVE_ENDPOINT"));
+    const defaultTimeoutMs = Number(getConfig("handlers.web_search.default_timeout_ms", 8000)) || 8000;
+    const defaultMaxResults = Number(getConfig("handlers.web_search.default_max_results", 5)) || 5;
+    const providerDefault = String(getConfig("handlers.web_search.default_provider", "duckduckgo")).trim() || "duckduckgo";
+    const runtimeWebSearch = runtimeTools.web_search || {};
+    const enabledRaw = String(process.env[enabledEnvName] || "").trim().toLowerCase();
+    const enabledFromEnv = enabledRaw === "1" || enabledRaw === "true" || enabledRaw === "yes";
+    const enabled = typeof runtimeWebSearch.enabled === "boolean" ? runtimeWebSearch.enabled : enabledFromEnv;
+    if (!enabled) {
+      throw new Error(`${enabledEnvName}=1 required for tools.web_search`);
+    }
+    const configuredTimeout = Number(process.env[timeoutEnvName]);
+    const configuredMaxResults = Number(process.env[maxResultsEnvName]);
+    const timeoutOverride = Number(runtimeWebSearch.timeout_ms);
+    const maxResultsOverride = Number(runtimeWebSearch.max_results);
+    const timeoutFromConfig = Number.isInteger(configuredTimeout) && configuredTimeout >= 200 && configuredTimeout <= 120000
+      ? configuredTimeout
+      : defaultTimeoutMs;
+    const maxResultsFromConfig = Number.isInteger(configuredMaxResults) && configuredMaxResults >= 1 && configuredMaxResults <= 20
+      ? configuredMaxResults
+      : defaultMaxResults;
+    const effectiveTimeoutMs = Number.isInteger(timeoutOverride) && timeoutOverride >= 200 && timeoutOverride <= 120000
+      ? timeoutOverride
+      : timeoutFromConfig;
+    const effectiveMaxResults = Number.isInteger(maxResultsOverride) && maxResultsOverride >= 1 && maxResultsOverride <= 20
+      ? maxResultsOverride
+      : maxResultsFromConfig;
+    const providerFromConfig = String(process.env[providerEnvName] || providerDefault).trim().toLowerCase() || "duckduckgo";
+    const providerOverride = String(runtimeWebSearch.provider || "").trim().toLowerCase();
+    const provider = (providerOverride === "duckduckgo" || providerOverride === "brave") ? providerOverride : providerFromConfig;
+    const baseUrlFromConfig = String(process.env[baseUrlEnvName] || "").trim() || String(getConfig("handlers.web_search.default_base_url", "https://api.duckduckgo.com"));
+    const baseUrl = String(runtimeWebSearch.base_url || "").trim() || baseUrlFromConfig;
+    const braveApiKey = Object.prototype.hasOwnProperty.call(runtimeWebSearch, "brave_api_key")
+      ? String(runtimeWebSearch.brave_api_key || "").trim()
+      : String(process.env[braveApiKeyEnvName] || "").trim();
+    const braveEndpointFromConfig = String(process.env[braveEndpointEnvName] || "").trim() || String(getConfig("handlers.web_search.default_brave_endpoint", "https://api.search.brave.com/res/v1/web/search"));
+    const braveEndpoint = String(runtimeWebSearch.brave_endpoint || "").trim() || braveEndpointFromConfig;
+
+    log(job.id, "info", "Executing web search", {
+      query: String(input?.query || input?.q || ""),
+      max_results: Number(input?.max_results) || effectiveMaxResults,
+      provider
+    });
+    return await runWebSearch(input, {
+      provider,
+      baseUrl,
+      braveApiKey,
+      braveEndpoint,
+      defaultTimeoutMs: effectiveTimeoutMs,
+      defaultMaxResults: effectiveMaxResults
+    });
+  }
+
+  if (handler === "builtin:workflow.run") {
+    const rootFromConfig = String(getConfig("providers.codex_oss.working_directory", "/workspace")).trim() || "/workspace";
+    log(job.id, "info", "Executing workflow", {
+      workflow: String(input?.workflow || input?.name || "")
+    });
+    return await runWorkflow(input, {
+      workspaceRoot: rootFromConfig,
+      createJob: (type, nextInput, opts) => enqueueInternalJob(type, nextInput, opts),
+      waitJob: async (waitJobId, waitOpts = {}) => {
+        const timeoutMs = Math.max(1000, Number(waitOpts?.timeoutMs) || 120000);
+        const started = Date.now();
+        while (Date.now() - started < timeoutMs) {
+          const row = db.prepare(`SELECT status, result_json, error_json FROM jobs WHERE id = ?`).get(waitJobId);
+          if (!row) return { status: "missing", result: null, error: { message: "job not found" } };
+          const status = String(row.status || "");
+          if (status === "succeeded") {
+            return {
+              status,
+              result: safeJsonParse(row.result_json) || null,
+              error: safeJsonParse(row.error_json) || null
+            };
+          }
+          if (status === "failed" || status === "cancelled") {
+            return {
+              status,
+              result: safeJsonParse(row.result_json) || null,
+              error: safeJsonParse(row.error_json) || null
+            };
+          }
+          await sleep(250);
+        }
+        return { status: "timeout", result: null, error: { message: "wait timeout" } };
+      }
+    });
   }
 
   throw new Error(`Unknown handler: ${handler}`);
@@ -439,25 +820,61 @@ async function withTimeout(promise, ms) {
 function claimNextJob() {
   const tx = db.transaction(() => {
     const placeholders = workerQueueAllowlist.map(() => "?").join(", ");
-    const job = db.prepare(`
+    const candidates = db.prepare(`
       SELECT *
       FROM jobs
       WHERE status = 'queued'
         AND queue IN (${placeholders})
         AND (locked_at IS NULL)
       ORDER BY priority DESC, created_at ASC
-      LIMIT 1
-    `).get(...workerQueueAllowlist);
+      LIMIT 100
+    `).all(...workerQueueAllowlist);
 
-    if (!job) return null;
+    if (!Array.isArray(candidates) || candidates.length < 1) return null;
 
-    db.prepare(`
-      UPDATE jobs
-      SET locked_at = ?, locked_by = ?, status = 'running', updated_at = ?
-      WHERE id = ?
-    `).run(nowIso(), workerId, nowIso(), job.id);
+    for (const job of candidates) {
+      const depIds = parseJobDependencies(job);
+      if (depIds.length > 0) {
+        const depState = resolveDependencyState(depIds);
+        if (depState.state === "waiting") continue;
+        if (depState.state === "blocked") {
+          const details = {
+            depends_on: depIds,
+            missing_dependencies: depState.missing,
+            failed_dependencies: depState.failed
+          };
+          db.prepare(`
+            UPDATE jobs
+            SET status = 'failed', error_json = ?, locked_at = NULL, locked_by = NULL, updated_at = ?
+            WHERE id = ?
+          `).run(
+            safeJsonStringify({
+              message: "Dependency failed or missing",
+              code: "DEPENDENCY_BLOCKED",
+              details,
+              at: nowIso()
+            }),
+            nowIso(),
+            job.id
+          );
+          db.prepare(`
+            INSERT INTO job_logs (job_id, ts, level, message, meta_json)
+            VALUES (?, ?, ?, ?, ?)
+          `).run(job.id, nowIso(), "error", "Dependency blocked job", safeJsonStringify(details));
+          continue;
+        }
+      }
 
-    return { ...job, status: "running", locked_at: nowIso(), locked_by: workerId, updated_at: nowIso() };
+      db.prepare(`
+        UPDATE jobs
+        SET locked_at = ?, locked_by = ?, status = 'running', updated_at = ?
+        WHERE id = ?
+      `).run(nowIso(), workerId, nowIso(), job.id);
+
+      return { ...job, status: "running", locked_at: nowIso(), locked_by: workerId, updated_at: nowIso() };
+    }
+
+    return null;
   });
 
   return tx();
@@ -475,6 +892,31 @@ function markJob(jobId, fields) {
   vals.push(jobId);
 
   db.prepare(`UPDATE jobs SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
+}
+
+function canAutoRetryWriteFileWithMkdirP(job, typeRow, err) {
+  if (!job || !typeRow) return false;
+  if (String(typeRow.name || "") !== "data.write_file") return false;
+  if (String(typeRow.handler || "") !== "builtin:data.write_file") return false;
+  const msg = String(err?.message || err || "").toLowerCase();
+  const missingParent =
+    msg.includes("parent directory does not exist")
+    || (msg.includes("enoent") && msg.includes("no such file or directory"));
+  if (!missingParent) return false;
+  const input = safeJsonParse(job.input_json);
+  if (!input || typeof input !== "object" || Array.isArray(input)) return false;
+  if (input.mkdir_p === true) return false;
+  if (input.__auto_retry_mkdir_p_attempted === true) return false;
+  return true;
+}
+
+function buildWriteFileAutoRetryInput(job) {
+  const base = safeJsonParse(job?.input_json) || {};
+  return {
+    ...base,
+    mkdir_p: true,
+    __auto_retry_mkdir_p_attempted: true
+  };
 }
 
 async function processOne() {
@@ -496,12 +938,12 @@ async function processOne() {
 
   const fresh = db.prepare(`SELECT status, timeout_sec, attempts, max_attempts FROM jobs WHERE id = ?`).get(job.id);
   if (!fresh || fresh.status === "cancelled") return true;
+  const timeoutMs = (fresh.timeout_sec || 120) * 1000;
 
   const attempts = (fresh.attempts || 0) + 1;
   markJob(job.id, { attempts });
 
   try {
-    const timeoutMs = (fresh.timeout_sec || 120) * 1000;
     const result = await withTimeout(runBuiltin(job, typeRow.handler), timeoutMs);
 
     markJob(job.id, {
@@ -515,6 +957,34 @@ async function processOne() {
     log(job.id, "info", "Job succeeded");
     recordMetricSafe("job.succeeded", { source: "worker", labels: { type: job.type || "unknown", queue: job.queue || "default" } });
   } catch (e) {
+    if (canAutoRetryWriteFileWithMkdirP(job, typeRow, e)) {
+      const retryInput = buildWriteFileAutoRetryInput(job);
+      markJob(job.id, { input_json: safeJsonStringify(retryInput) });
+      log(job.id, "warn", "Auto-retrying data.write_file with mkdir_p=true after missing parent directory error");
+      try {
+        const retriedJob = { ...job, input_json: safeJsonStringify(retryInput) };
+        const retryResult = await withTimeout(runBuiltin(retriedJob, typeRow.handler), timeoutMs);
+        markJob(job.id, {
+          status: "succeeded",
+          input_json: safeJsonStringify(retryInput),
+          result_json: safeJsonStringify(retryResult),
+          error_json: null,
+          locked_at: null,
+          locked_by: null,
+        });
+        log(job.id, "info", "Job succeeded after auto-retry with mkdir_p=true");
+        recordMetricSafe("job.succeeded", { source: "worker", labels: { type: job.type || "unknown", queue: job.queue || "default" } });
+        const done = db.prepare(`SELECT * FROM jobs WHERE id = ?`).get(job.id);
+        try {
+          if (done) writeJobToWorkspaceIndex(workspaceRootForIndex, done, { event: "finished" });
+        } catch {}
+        if (done) await postCallback(done);
+        return true;
+      } catch (retryErr) {
+        e = retryErr;
+      }
+    }
+
     const msg = String(e?.message || e);
     const code = e?.code || null;
     const details = e?.details || null;
@@ -544,6 +1014,9 @@ async function processOne() {
   }
 
   const done = db.prepare(`SELECT * FROM jobs WHERE id = ?`).get(job.id);
+  try {
+    if (done) writeJobToWorkspaceIndex(workspaceRootForIndex, done, { event: "finished" });
+  } catch {}
   if (done) await postCallback(done);
 
   return true;
@@ -591,4 +1064,4 @@ function startWorker() {
   }, intervalMs);
 }
 
-module.exports = { startWorker, log };
+module.exports = { startWorker, log, parseJobDependencies, resolveDependencyState };

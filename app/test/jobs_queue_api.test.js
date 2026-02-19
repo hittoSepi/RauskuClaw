@@ -185,3 +185,170 @@ test("idempotency key conflicts when queue differs", async (t) => {
     await api.stop();
   }
 });
+
+test("jobs API validates handler-specific risky inputs at create time", async (t) => {
+  if (!(await canBindTcp())) {
+    t.skip("TCP bind not allowed in this test environment.");
+    return;
+  }
+
+  const api = await startApi();
+  try {
+    const enableToolExec = await requestJson(api.baseUrl, "/v1/job-types/tool.exec", {
+      method: "PATCH",
+      body: { enabled: true }
+    });
+    assert.equal(enableToolExec.status, 200, enableToolExec.text);
+
+    const badToolExec = await requestJson(api.baseUrl, "/v1/jobs", {
+      method: "POST",
+      body: { type: "tool.exec", input: { args: ["status"] } }
+    });
+    assert.equal(badToolExec.status, 400, badToolExec.text);
+    assert.equal(badToolExec.json?.error?.code, "VALIDATION_ERROR");
+    assert.match(String(badToolExec.json?.error?.message || ""), /tool\.exec requires input\.command/);
+
+    const aliasToolExec = await requestJson(api.baseUrl, "/v1/jobs", {
+      method: "POST",
+      body: { type: "tool.exec", input: { cmd: "echo hi" } }
+    });
+    assert.equal(aliasToolExec.status, 200, aliasToolExec.text);
+    assert.equal(aliasToolExec.json?.ok, true);
+
+    const badFetchProto = await requestJson(api.baseUrl, "/v1/jobs", {
+      method: "POST",
+      body: { type: "data.fetch", input: { url: "http://example.com/" } }
+    });
+    assert.equal(badFetchProto.status, 400, badFetchProto.text);
+    assert.equal(badFetchProto.json?.error?.code, "VALIDATION_ERROR");
+    assert.match(String(badFetchProto.json?.error?.message || ""), /must use https/);
+
+    const badFileRead = await requestJson(api.baseUrl, "/v1/jobs", {
+      method: "POST",
+      body: { type: "data.file_read", input: {} }
+    });
+    assert.equal(badFileRead.status, 400, badFileRead.text);
+    assert.equal(badFileRead.json?.error?.code, "VALIDATION_ERROR");
+    assert.match(String(badFileRead.json?.error?.message || ""), /data\.file_read requires input\.path/);
+
+    const goodFileRead = await requestJson(api.baseUrl, "/v1/jobs", {
+      method: "POST",
+      body: { type: "data.file_read", input: { path: "README.md", max_bytes: 1024 } }
+    });
+    assert.equal(goodFileRead.status, 201, goodFileRead.text);
+
+    const badDependsOn = await requestJson(api.baseUrl, "/v1/jobs", {
+      method: "POST",
+      body: { type: "data.file_read", input: { path: "README.md", depends_on: "abc" } }
+    });
+    assert.equal(badDependsOn.status, 400, badDependsOn.text);
+    assert.equal(badDependsOn.json?.error?.code, "VALIDATION_ERROR");
+    assert.match(String(badDependsOn.json?.error?.message || ""), /depends_on must be an array/i);
+
+    const goodDependsOn = await requestJson(api.baseUrl, "/v1/jobs", {
+      method: "POST",
+      body: { type: "data.file_read", input: { path: "README.md", depends_on: ["dep-a", "dep-b"] } }
+    });
+    assert.equal(goodDependsOn.status, 201, goodDependsOn.text);
+
+    const badFileSearch = await requestJson(api.baseUrl, "/v1/jobs", {
+      method: "POST",
+      body: { type: "tools.file_search", input: { path: "." } }
+    });
+    assert.equal(badFileSearch.status, 400, badFileSearch.text);
+    assert.equal(badFileSearch.json?.error?.code, "VALIDATION_ERROR");
+    assert.match(String(badFileSearch.json?.error?.message || ""), /tools\.file_search requires input\.query/);
+
+    const goodFileSearch = await requestJson(api.baseUrl, "/v1/jobs", {
+      method: "POST",
+      body: { type: "tools.file_search", input: { query: "README", path: ".", max_results: 5 } }
+    });
+    assert.equal(goodFileSearch.status, 201, goodFileSearch.text);
+
+    const badFindInFiles = await requestJson(api.baseUrl, "/v1/jobs", {
+      method: "POST",
+      body: { type: "tools.find_in_files", input: { path: "." } }
+    });
+    assert.equal(badFindInFiles.status, 400, badFindInFiles.text);
+    assert.equal(badFindInFiles.json?.error?.code, "VALIDATION_ERROR");
+    assert.match(String(badFindInFiles.json?.error?.message || ""), /tools\.find_in_files requires input\.query/);
+
+    const goodFindInFiles = await requestJson(api.baseUrl, "/v1/jobs", {
+      method: "POST",
+      body: { type: "tools.find_in_files", input: { query: "README", path: ".", max_results: 5 } }
+    });
+    assert.equal(goodFindInFiles.status, 201, goodFindInFiles.text);
+
+    const badWorkflowRun = await requestJson(api.baseUrl, "/v1/jobs", {
+      method: "POST",
+      body: { type: "workflow.run", input: { vars: { query: "README" } } }
+    });
+    assert.equal(badWorkflowRun.status, 400, badWorkflowRun.text);
+    assert.equal(badWorkflowRun.json?.error?.code, "VALIDATION_ERROR");
+    assert.match(String(badWorkflowRun.json?.error?.message || ""), /workflow\.run requires input\.workflow/);
+
+    const goodWorkflowRun = await requestJson(api.baseUrl, "/v1/jobs", {
+      method: "POST",
+      body: { type: "workflow.run", input: { workflow: "find_readme", vars: { query: "README" } } }
+    });
+    assert.equal(goodWorkflowRun.status, 201, goodWorkflowRun.text);
+
+    const enableWebSearch = await requestJson(api.baseUrl, "/v1/job-types/tools.web_search", {
+      method: "PATCH",
+      body: { enabled: true }
+    });
+    assert.equal(enableWebSearch.status, 200, enableWebSearch.text);
+
+    const badWebSearch = await requestJson(api.baseUrl, "/v1/jobs", {
+      method: "POST",
+      body: { type: "tools.web_search", input: { max_results: 3 } }
+    });
+    assert.equal(badWebSearch.status, 400, badWebSearch.text);
+    assert.equal(badWebSearch.json?.error?.code, "VALIDATION_ERROR");
+    assert.match(String(badWebSearch.json?.error?.message || ""), /tools\.web_search requires input\.query/);
+
+    const goodWebSearch = await requestJson(api.baseUrl, "/v1/jobs", {
+      method: "POST",
+      body: { type: "tools.web_search", input: { query: "nodejs", max_results: 3 } }
+    });
+    assert.equal(goodWebSearch.status, 201, goodWebSearch.text);
+  } finally {
+    await api.stop();
+  }
+});
+
+test("job manager submit-intent normalizes and creates chained jobs", async (t) => {
+  if (!(await canBindTcp())) {
+    t.skip("TCP bind not allowed in this test environment.");
+    return;
+  }
+
+  const api = await startApi();
+  try {
+    const out = await requestJson(api.baseUrl, "/v1/jobs/submit-intent", {
+      method: "POST",
+      body: {
+        user_text: "etsi readme",
+        jobs: [
+          { type: "tools.file_search", input: { path: "." }, tags: ["chat"] }
+        ],
+        options: { inject_tool_docs: true, repair: true }
+      }
+    });
+    assert.equal(out.status, 201, out.text);
+    assert.equal(out.json?.ok, true);
+    assert.ok(Array.isArray(out.json?.created_jobs), out.text);
+    assert.ok(out.json.created_jobs.length >= 2, out.text);
+    assert.ok(out.json.created_jobs.some((x) => x?.kind === "tool_doc"), out.text);
+    assert.ok(out.json.created_jobs.some((x) => x?.kind === "intent"), out.text);
+
+    const intent = out.json.created_jobs.find((x) => x?.kind === "intent")?.job || null;
+    assert.equal(intent?.type, "tools.file_search");
+    assert.equal(typeof intent?.input?.query, "string");
+    assert.ok(String(intent.input.query).length >= 1);
+    assert.ok(Array.isArray(intent?.input?.depends_on));
+    assert.ok(intent.input.depends_on.length >= 1);
+  } finally {
+    await api.stop();
+  }
+});

@@ -1,19 +1,34 @@
+function normalizeSuggestedType(rawType) {
+  const type = String(rawType || "").trim();
+  if (!type) return "";
+  const lower = type.toLowerCase();
+  if (lower === "tools.exec" || lower === "tools.command" || lower === "tools.terminal" || lower === "tools.bash") {
+    return "tool.exec";
+  }
+  if (lower === "tool.web_search" || lower === "web.search" || lower === "web_search") {
+    return "tools.web_search";
+  }
+  if (lower === "file.search" || lower === "workspace.file_search" || lower === "data.file_search") {
+    return "tools.file_search";
+  }
+  if (lower === "find.in_files" || lower === "tools.find_in_file" || lower === "tools.find_in_files") {
+    return "tools.find_in_files";
+  }
+  if (lower === "shell.exec" || lower === "command.exec" || lower === "terminal.exec" || lower === "bash.exec") {
+    return "tool.exec";
+  }
+  return type;
+}
+
 export function parseSuggestedJobs(text) {
   const raw = String(text || "");
-  const block = raw.match(/```rausku_jobs\s*([\s\S]*?)```/i);
-  if (!block) return [];
-
-  let parsed;
-  try {
-    parsed = JSON.parse(block[1].trim());
-  } catch {
-    return [];
-  }
+  const parsed = parseSuggestedJobsPayload(raw);
+  if (!parsed) return [];
 
   const items = Array.isArray(parsed?.jobs) ? parsed.jobs : [];
   const out = [];
   for (const job of items) {
-    const type = String(job?.type || "").trim();
+    const type = normalizeSuggestedType(job?.type);
     if (!type) continue;
 
     const queueRaw = String(job?.queue || "").trim();
@@ -24,7 +39,8 @@ export function parseSuggestedJobs(text) {
     const tags = Array.isArray(job?.tags)
       ? job.tags.map((x) => String(x || "").trim()).filter(Boolean).slice(0, 20)
       : [];
-    const input = job?.input && typeof job.input === "object" ? job.input : {};
+    const rawInput = job?.input && typeof job.input === "object" ? job.input : {};
+    const input = normalizeSuggestedInput(type, rawInput);
 
     out.push({
       type,
@@ -36,6 +52,94 @@ export function parseSuggestedJobs(text) {
       tags
     });
   }
+  return out;
+}
+
+function parseSuggestedJobsPayload(raw) {
+  const fenced = raw.match(/```rausku_jobs\s*([\s\S]*?)```/i);
+  if (fenced) {
+    try {
+      return JSON.parse(String(fenced[1] || "").trim());
+    } catch {}
+  }
+
+  const afterFence = raw.match(/```rausku_jobs\s*([\s\S]*)$/i);
+  if (afterFence) {
+    const start = String(afterFence[1] || "").indexOf("{");
+    if (start >= 0) {
+      const candidate = extractBalancedJsonObject(String(afterFence[1] || ""), start);
+      if (candidate) {
+        try {
+          return JSON.parse(candidate);
+        } catch {}
+      }
+    }
+  }
+
+  const jobsIdx = raw.search(/"\s*jobs\s*"\s*:/i);
+  if (jobsIdx >= 0) {
+    const start = raw.lastIndexOf("{", jobsIdx);
+    if (start >= 0) {
+      const candidate = extractBalancedJsonObject(raw, start);
+      if (candidate) {
+        try {
+          return JSON.parse(candidate);
+        } catch {}
+      }
+    }
+  }
+  return null;
+}
+
+function extractBalancedJsonObject(text, startIndex) {
+  const src = String(text || "");
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = startIndex; i < src.length; i += 1) {
+    const ch = src[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") {
+      depth += 1;
+      continue;
+    }
+    if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) return src.slice(startIndex, i + 1);
+      if (depth < 0) return null;
+    }
+  }
+  return null;
+}
+
+function normalizeSuggestedInput(type, input) {
+  const out = input && typeof input === "object" ? { ...input } : {};
+  const t = String(type || "").trim();
+
+  if (t === "tools.file_search") {
+    const q = String(out.query || "").trim();
+    const pattern = String(out.pattern || "").trim();
+    if (!q && pattern) out.query = pattern;
+  }
+  if (t === "tools.web_search") {
+    const q = String(out.query || "").trim();
+    const pattern = String(out.pattern || "").trim();
+    if (!q && pattern) out.query = pattern;
+  }
+
   return out;
 }
 

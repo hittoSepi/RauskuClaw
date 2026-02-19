@@ -4,6 +4,7 @@
       <div style="font-weight: 700">Job</div>
       <div class="spacer"></div>
       <span class="badge" :class="streamBadgeClass">{{ streamLabel }}</span>
+      <span v-if="queueAllowlistLabel !== 'all'" class="badge">scope {{ queueAllowlistLabel }}</span>
       <button class="btn" @click="load" :disabled="loading">{{ loading ? "Refreshing..." : "Refresh" }}</button>
       <button
         class="btn"
@@ -27,6 +28,7 @@
     <div v-if="job">
       <div class="row" style="margin-bottom: 10px">
         <span class="badge">{{ job.type }}</span>
+        <span class="badge">q {{ job.queue || "default" }}</span>
         <span class="badge" :class="badgeClass(job.status)">{{ job.status }}</span>
         <span class="badge">attempts {{ job.attempts }}/{{ job.max_attempts }}</span>
         <span class="badge">priority {{ job.priority }}</span>
@@ -78,6 +80,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import { api } from "../api.js";
+import { refreshAuthState, useAuthState } from "../auth_state.js";
 
 const props = defineProps({ id: String });
 
@@ -92,6 +95,12 @@ const streamStatus = ref("off");
 const lastLoadedAt = ref("");
 let stream = null;
 let reconnectTimer = null;
+const { queueAllowlist } = useAuthState();
+
+const queueAllowlistLabel = computed(() => {
+  if (!Array.isArray(queueAllowlist.value) || queueAllowlist.value.length < 1) return "all";
+  return queueAllowlist.value.join(",");
+});
 
 function badgeClass(s) {
   if (s === "succeeded") return "ok";
@@ -135,7 +144,11 @@ async function load() {
     logs.value = (l.logs || []).map(x => ({ ...x, id: x.id ?? null }));
     lastLoadedAt.value = new Date().toLocaleTimeString();
   } catch (e) {
-    err.value = e.message || String(e);
+    if (e?.status === 404 && Array.isArray(queueAllowlist.value) && queueAllowlist.value.length > 0) {
+      err.value = `Job not found in your queue scope (allowed queues: ${queueAllowlist.value.join(", ")}).`;
+    } else {
+      err.value = e.message || String(e);
+    }
   } finally {
     loading.value = false;
   }
@@ -150,7 +163,11 @@ async function cancel() {
     await load();
     statusMsg.value = "Cancel request submitted successfully.";
   } catch (e) {
-    err.value = e.message || String(e);
+    if (e?.status === 404 && Array.isArray(queueAllowlist.value) && queueAllowlist.value.length > 0) {
+      err.value = `Cancel blocked: job is outside your queue scope (allowed queues: ${queueAllowlist.value.join(", ")}).`;
+    } else {
+      err.value = e.message || String(e);
+    }
   } finally {
     cancelling.value = false;
   }
@@ -249,6 +266,7 @@ watch(auto, (enabled) => {
 });
 
 onMounted(async () => {
+  await refreshAuthState();
   await load();
   connectStream();
 });

@@ -1,0 +1,23 @@
+workflows:
+  find_readme:
+    name: "Find README"
+    description: "Find README-like files and read the default README."
+    params:
+      - name: query
+        type: string
+        required: false
+        default: "README"
+        description: "Search query for filename lookup"
+    steps:
+      - id: find
+        type: tools.file_search
+        input:
+          query: "${query}"
+          path: "."
+          max_results: 5
+      - id: read
+        type: data.file_read
+        depends_on: [find]
+        input:
+          path: "README.md"
+          max_bytes: 8192

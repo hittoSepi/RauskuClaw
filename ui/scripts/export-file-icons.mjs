@@ -10,29 +10,29 @@ const ROOT = path.resolve(__dirname, "..");
 const OUT_DIR = path.join(ROOT, "public", "file-icons");
 
 const TARGETS = {
-  dir: [/^default-folder$/, /^folder$/, /folder/],
-  file: [/^default-file$/, /^file$/, /file/],
-  js: [/javascript/],
-  ts: [/typescript/],
-  json: [/json/],
-  yaml: [/yaml/],
-  md: [/markdown/],
-  py: [/python/],
-  go: [/go(-lang)?/],
-  rs: [/rust/],
-  java: [/java/],
-  sql: [/sql/],
-  sh: [/shell/, /terminal/, /bash/],
-  docker: [/docker/],
-  html: [/html/],
-  xml: [/xml/],
-  css: [/css/],
-  vue: [/vue/]
+  dir: ["default-folder"],
+  file: ["default-file"],
+  js: ["file-type-js", "file-type-js-official"],
+  ts: ["file-type-typescript", "file-type-typescript-official"],
+  json: ["file-type-json", "file-type-json-official", "file-type-light-json"],
+  yaml: ["file-type-yaml", "file-type-yaml-official", "file-type-light-yaml"],
+  md: ["file-type-markdown"],
+  py: ["file-type-python"],
+  go: ["file-type-go", "file-type-go-gopher", "file-type-go-white"],
+  rs: ["file-type-rust", "file-type-light-rust"],
+  java: ["file-type-java"],
+  sql: ["file-type-sql", "file-type-mysql", "file-type-pgsql"],
+  sh: ["file-type-shell", "file-type-nushell"],
+  docker: ["file-type-docker"],
+  html: ["file-type-html", "file-type-antlers-html"],
+  xml: ["file-type-xml", "file-type-wxml"],
+  css: ["file-type-css"],
+  vue: ["file-type-vue"]
 };
 
-function pickIconName(allNames, patterns) {
-  for (const pattern of patterns) {
-    const found = allNames.find((name) => pattern.test(name));
+function pickIconName(allNames, candidates) {
+  for (const candidate of candidates) {
+    const found = allNames.find((name) => name === candidate);
     if (found) return found;
   }
   return "";

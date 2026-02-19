@@ -74,6 +74,7 @@
       "enabled": false,
       "api_key_env": "OPENAI_API_KEY",
       "base_url": "https://api.openai.com",
+      "chat_completions_path": "/v1/chat/completions",
       "model": "gpt-4.1-mini",
       "timeout_ms": 30000
     },
@@ -112,6 +113,42 @@
       "default_allowed_targets": [
         "staging"
       ]
+    },
+    "exec": {
+      "enabled_env": "TOOL_EXEC_ENABLED",
+      "allowlist_env": "TOOL_EXEC_ALLOWLIST",
+      "timeout_env": "TOOL_EXEC_TIMEOUT_MS",
+      "default_timeout_ms": 10000,
+      "default_allowed_commands": []
+    },
+    "data_fetch": {
+      "enabled_env": "DATA_FETCH_ENABLED",
+      "allowlist_env": "DATA_FETCH_ALLOWLIST",
+      "timeout_env": "DATA_FETCH_TIMEOUT_MS",
+      "max_bytes_env": "DATA_FETCH_MAX_BYTES",
+      "default_timeout_ms": 8000,
+      "default_max_bytes": 65536,
+      "default_allowed_domains": []
+    },
+    "file_read": {
+      "enabled_env": "DATA_FILE_READ_ENABLED",
+      "max_bytes_env": "DATA_FILE_READ_MAX_BYTES",
+      "workspace_root": "/workspace",
+      "default_max_bytes": 262144
+    },
+    "web_search": {
+      "enabled_env": "WEB_SEARCH_ENABLED",
+      "provider_env": "WEB_SEARCH_PROVIDER",
+      "timeout_env": "WEB_SEARCH_TIMEOUT_MS",
+      "max_results_env": "WEB_SEARCH_MAX_RESULTS",
+      "base_url_env": "WEB_SEARCH_BASE_URL",
+      "brave_api_key_env": "WEB_SEARCH_BRAVE_API_KEY",
+      "brave_endpoint_env": "WEB_SEARCH_BRAVE_ENDPOINT",
+      "default_provider": "duckduckgo",
+      "default_timeout_ms": 8000,
+      "default_max_results": 5,
+      "default_base_url": "https://api.duckduckgo.com",
+      "default_brave_endpoint": "https://api.search.brave.com/res/v1/web/search"
     }
   },
   "ui": {
@@ -136,6 +173,22 @@
     "SCHEDULER_BATCH_SIZE": "worker.scheduler.batch_size",
     "SCHEDULER_CRON_TZ": "worker.scheduler.cron_timezone",
     "DEPLOY_TARGET_ALLOWLIST": "handlers.deploy.allowlist_env",
+    "TOOL_EXEC_ENABLED": "handlers.exec.enabled_env",
+    "TOOL_EXEC_ALLOWLIST": "handlers.exec.allowlist_env",
+    "TOOL_EXEC_TIMEOUT_MS": "handlers.exec.timeout_env",
+    "DATA_FETCH_ENABLED": "handlers.data_fetch.enabled_env",
+    "DATA_FETCH_ALLOWLIST": "handlers.data_fetch.allowlist_env",
+    "DATA_FETCH_TIMEOUT_MS": "handlers.data_fetch.timeout_env",
+    "DATA_FETCH_MAX_BYTES": "handlers.data_fetch.max_bytes_env",
+    "DATA_FILE_READ_ENABLED": "handlers.file_read.enabled_env",
+    "DATA_FILE_READ_MAX_BYTES": "handlers.file_read.max_bytes_env",
+    "WEB_SEARCH_ENABLED": "handlers.web_search.enabled_env",
+    "WEB_SEARCH_PROVIDER": "handlers.web_search.provider_env",
+    "WEB_SEARCH_TIMEOUT_MS": "handlers.web_search.timeout_env",
+    "WEB_SEARCH_MAX_RESULTS": "handlers.web_search.max_results_env",
+    "WEB_SEARCH_BASE_URL": "handlers.web_search.base_url_env",
+    "WEB_SEARCH_BRAVE_API_KEY": "handlers.web_search.brave_api_key_env",
+    "WEB_SEARCH_BRAVE_ENDPOINT": "handlers.web_search.brave_endpoint_env",
     "CALLBACK_ALLOWLIST": "callbacks.allowlist_env",
     "CALLBACK_SIGNING_ENABLED": "callbacks.signing.enabled",
     "CALLBACK_SIGNING_SECRET": "callbacks.signing.secret_env",
@@ -149,6 +202,7 @@
     "OPENAI_ENABLED": "providers.openai.enabled",
     "OPENAI_API_KEY": "providers.openai.api_key_env",
     "OPENAI_BASE_URL": "providers.openai.base_url",
+    "OPENAI_CHAT_COMPLETIONS_PATH": "providers.openai.chat_completions_path",
     "OPENAI_MODEL": "providers.openai.model",
     "OPENAI_TIMEOUT_MS": "providers.openai.timeout_ms",
     "CODEX_OSS_ENABLED": "providers.codex_oss.enabled",

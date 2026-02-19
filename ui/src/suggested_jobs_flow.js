@@ -18,11 +18,45 @@ export function evaluateSuggestedJobDecisions(jobs, policy) {
 
 export function parseFilterAndDecideSuggestedJobs({ text, currentType, userText, policy }) {
   const suggestions = parseSuggestedJobs(text);
-  const filtered = filterDuplicateSuggestions(suggestions, { currentType, userText });
+  const enabledTypes = (Array.isArray(policy?.enabledTypes) ? policy.enabledTypes : [])
+    .map((x) => String(x || "").trim())
+    .filter(Boolean);
+  const enabledSet = new Set(enabledTypes);
+  const normalizedSuggestions = suggestions.map((job) => ({
+    ...job,
+    type: normalizeChatGenerateType(job?.type, { currentType, enabledTypes })
+  }));
+  const typeFiltered = enabledSet.size > 0
+    ? normalizedSuggestions.filter((job) => enabledSet.has(String(job?.type || "").trim()))
+    : normalizedSuggestions.slice();
+  const droppedUnknownTypes = normalizedSuggestions.length - typeFiltered.length;
+
+  const dupFiltered = filterDuplicateSuggestions(typeFiltered, { currentType, userText });
+  const filtered = {
+    kept: dupFiltered.kept,
+    dropped: Number(dupFiltered.dropped || 0) + droppedUnknownTypes
+  };
   const decisions = evaluateSuggestedJobDecisions(filtered.kept, policy);
   const autoCount = decisions.filter((x) => x?.auto === true).length;
   const approvalCount = decisions.length - autoCount;
-  return { suggestions, filtered, decisions, autoCount, approvalCount };
+  return { suggestions: normalizedSuggestions, filtered, decisions, autoCount, approvalCount };
+}
+
+function normalizeChatGenerateType(rawType, { currentType, enabledTypes }) {
+  const type = String(rawType || "").trim();
+  if (!type || !type.endsWith(".chat.generate")) return type;
+
+  const enabled = Array.isArray(enabledTypes) ? enabledTypes : [];
+  if (enabled.includes(type)) return type;
+
+  const current = String(currentType || "").trim();
+  if (current.endsWith(".chat.generate") && enabled.includes(current)) return current;
+
+  const enabledChatTypes = enabled.filter((t) => t.endsWith(".chat.generate"));
+  if (enabledChatTypes.length === 1) return enabledChatTypes[0];
+  if (enabled.includes("ai.chat.generate")) return "ai.chat.generate";
+  if (enabled.includes("codex.chat.generate")) return "codex.chat.generate";
+  return type;
 }
 
 export function selectSuggestedJobsForCreation({ jobs, decisions, mode = "all", enabledTypes = [] }) {

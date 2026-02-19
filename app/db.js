@@ -104,6 +104,7 @@ function migrate() {
       name TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       type TEXT NOT NULL,
+      queue TEXT NOT NULL DEFAULT 'default',
       input_json TEXT,
       priority INTEGER NOT NULL DEFAULT 5,
       timeout_sec INTEGER NOT NULL DEFAULT 120,
@@ -146,6 +147,7 @@ function migrate() {
 
   ensureMemoryColumns();
   ensureScheduleColumns();
+  ensureScheduleIndexes();
   ensureJobsQueueColumn();
   ensureJobsQueueIndex();
   db.exec("CREATE INDEX IF NOT EXISTS idx_memories_scope_embedding_status ON memories(scope, embedding_status)");
@@ -174,6 +176,13 @@ function ensureScheduleColumns() {
   if (!hasColumn("job_schedules", "cron_expr")) {
     db.exec("ALTER TABLE job_schedules ADD COLUMN cron_expr TEXT");
   }
+  if (!hasColumn("job_schedules", "queue")) {
+    db.exec("ALTER TABLE job_schedules ADD COLUMN queue TEXT NOT NULL DEFAULT 'default'");
+  }
+}
+
+function ensureScheduleIndexes() {
+  db.exec("CREATE INDEX IF NOT EXISTS idx_job_schedules_queue_enabled_next_run_at ON job_schedules(queue, enabled, next_run_at)");
 }
 
 function ensureJobsQueueColumn() {
@@ -201,8 +210,15 @@ const defaults = [
   ["report.generate", 1, "builtin:report.generate", 120, 1],
   ["deploy.run", 1, "builtin:deploy.run", 300, 1],
   ["data.fetch", 1, "builtin:data.fetch", 60, 1],
+  ["data.file_read", 1, "builtin:data.file_read", 30, 1],
+  ["data.write_file", 1, "builtin:data.write_file", 45, 1],
+  ["tools.file_search", 1, "builtin:tools.file_search", 45, 1],
+  ["tools.find_in_files", 1, "builtin:tools.find_in_files", 60, 1],
+  ["workflow.run", 1, "builtin:workflow.run", 60, 1],
   ["code.component.generate", 1, "builtin:code.component.generate", 120, 1],
   ["design.frontpage.layout", 1, "builtin:design.frontpage.layout", 120, 1],
+  ["tool.exec", 0, "builtin:tool.exec", 120, 1],
+  ["tools.web_search", 0, "builtin:tools.web_search", 60, 1],
   ["system.memory.embed.sync", 1, "builtin:memory.embed.sync", 60, 3],
   // Disabled by default until Codex CLI settings/login are configured.
   ["codex.chat.generate", 0, "builtin:provider.codex.oss.chat", 180, 1],

@@ -9,6 +9,7 @@ function setupDb() {
     CREATE TABLE jobs (
       id TEXT PRIMARY KEY,
       type TEXT NOT NULL,
+      queue TEXT NOT NULL DEFAULT 'default',
       status TEXT NOT NULL,
       priority INTEGER NOT NULL,
       timeout_sec INTEGER NOT NULL,
@@ -40,6 +41,7 @@ function setupDb() {
       name TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       type TEXT NOT NULL,
+      queue TEXT NOT NULL DEFAULT 'default',
       input_json TEXT,
       priority INTEGER NOT NULL DEFAULT 5,
       timeout_sec INTEGER NOT NULL DEFAULT 120,
@@ -69,15 +71,16 @@ function insertType(db, name, enabled = 1) {
 function insertSchedule(db, row) {
   db.prepare(`
     INSERT INTO job_schedules (
-      id, name, enabled, type, input_json, priority, timeout_sec, max_attempts, tags_json,
+      id, name, enabled, type, queue, input_json, priority, timeout_sec, max_attempts, tags_json,
       interval_sec, cron_expr, next_run_at, last_run_at, last_job_id, last_error_json, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     row.id,
     row.name || null,
     row.enabled == null ? 1 : row.enabled,
     row.type,
+    row.queue || "default",
     JSON.stringify(row.input ?? null),
     row.priority == null ? 5 : row.priority,
     row.timeout_sec == null ? 120 : row.timeout_sec,
@@ -102,6 +105,7 @@ test("dispatchDueSchedules enqueues queued job from due schedule", () => {
     id: "s1",
     name: "report-every-minute",
     type: "report.generate",
+    queue: "alpha",
     input: { hello: "world" },
     tags: ["sched"],
     interval_sec: 60,
@@ -120,6 +124,7 @@ test("dispatchDueSchedules enqueues queued job from due schedule", () => {
   const job = db.prepare(`SELECT * FROM jobs LIMIT 1`).get();
   assert.equal(job.status, "queued");
   assert.equal(job.type, "report.generate");
+  assert.equal(job.queue, "alpha");
 
   const scheduleRow = db.prepare(`SELECT * FROM job_schedules WHERE id = 's1'`).get();
   assert.equal(typeof scheduleRow.last_job_id, "string");

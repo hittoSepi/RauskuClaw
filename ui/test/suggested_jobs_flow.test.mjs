@@ -99,3 +99,60 @@ test("selectSuggestedJobsForCreation reports invalid disabled types in approval 
   assert.equal(selected.valid.length, 0);
   assert.deepEqual(selected.invalidTypes, ["unknown.type"]);
 });
+
+test("parseFilterAndDecideSuggestedJobs drops types not in enabledTypes", () => {
+  const assistantText = [
+    "```rausku_jobs",
+    JSON.stringify({
+      jobs: [
+        { type: "shell.exec", input: { command: "ls -la" } },
+        { type: "report.generate", input: { source: "daily" } }
+      ]
+    }),
+    "```"
+  ].join("\n");
+
+  const flow = parseFilterAndDecideSuggestedJobs({
+    text: assistantText,
+    currentType: "ai.chat.generate",
+    userText: "list files",
+    policy: {
+      mode: "smart",
+      enabledTypes: ["report.generate"],
+      allowTypes: ["report.generate"]
+    }
+  });
+
+  assert.equal(flow.suggestions.length, 2);
+  assert.equal(flow.filtered.kept.length, 1);
+  assert.equal(flow.filtered.kept[0].type, "report.generate");
+  assert.equal(flow.filtered.dropped, 1);
+});
+
+test("parseFilterAndDecideSuggestedJobs normalizes unknown chat provider type to current enabled chat type", () => {
+  const assistantText = [
+    "```rausku_jobs",
+    JSON.stringify({
+      jobs: [
+        { type: "openai.chat.generate", input: { prompt: "Hello" } }
+      ]
+    }),
+    "```"
+  ].join("\n");
+
+  const flow = parseFilterAndDecideSuggestedJobs({
+    text: assistantText,
+    currentType: "ai.chat.generate",
+    userText: "Hello",
+    policy: {
+      mode: "smart",
+      enabledTypes: ["ai.chat.generate"],
+      allowTypes: ["ai.chat.generate"]
+    }
+  });
+
+  assert.equal(flow.suggestions.length, 1);
+  assert.equal(flow.suggestions[0].type, "ai.chat.generate");
+  assert.equal(flow.filtered.kept.length, 0);
+  assert.equal(flow.filtered.dropped, 1);
+});

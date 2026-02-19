@@ -3,8 +3,8 @@
     <div class="row" style="margin-bottom: 10px">
       <div style="font-weight: 700">Create Job</div>
       <div class="spacer"></div>
-      <button class="btn" @click="reloadAll" :disabled="loadingTypes || loadingProviders">
-        {{ (loadingTypes || loadingProviders) ? "Loading..." : "Reload" }}
+      <button class="btn" @click="reloadAll" :disabled="loadingTypes || loadingProviders || loadingHandlers">
+        {{ (loadingTypes || loadingProviders || loadingHandlers) ? "Loading..." : "Reload" }}
       </button>
     </div>
 
@@ -19,7 +19,15 @@
 
       <div style="width: 220px">
         <label class="field-label">Queue</label>
-        <input class="input" v-model.trim="form.queue" placeholder="default" style="width: 100%" />
+        <select
+          v-if="hasQueueAllowlist"
+          class="select"
+          v-model="form.queue"
+          style="width: 100%"
+        >
+          <option v-for="q in queueAllowlistOptions" :key="q" :value="q">{{ q }}</option>
+        </select>
+        <input v-else class="input" v-model.trim="form.queue" placeholder="default" style="width: 100%" />
       </div>
 
       <div style="display: flex; align-items: end">
@@ -32,6 +40,7 @@
     <div v-if="selectedType" class="row" style="margin-bottom: 10px; gap: 8px">
       <span class="badge">handler {{ selectedType.handler }}</span>
       <span class="badge" v-if="providerSummary">{{ providerSummary }}</span>
+      <span class="badge" v-if="handlerRuntimeSummary">{{ handlerRuntimeSummary }}</span>
     </div>
 
     <div v-if="isChatType" style="margin-top: 6px">
@@ -140,6 +149,12 @@
       </button>
       <span style="color: var(--muted); font-size: 13px">Creates with `/v1/jobs`</span>
     </div>
+    <div v-if="queueAllowlistLabel !== 'all'" style="margin-top: 8px; color: var(--muted); font-size: 12px">
+      Allowed queues for this API key: {{ queueAllowlistLabel }}
+    </div>
+    <div v-if="isReadOnly" style="margin-top: 8px; color: #f59e0b; font-size: 12px">
+      Read-only API key active: job creation is disabled.
+    </div>
 
     <div v-if="statusMsg" style="margin-top: 10px; color: #7ee787; font-size: 13px">
       {{ statusMsg }}
@@ -184,11 +199,14 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { api } from "../api.js";
+import { refreshAuthState, useAuthState } from "../auth_state.js";
+import { getInputTemplateForType, validateTypeSpecificInput } from "../job_input_templates.js";
 
 const types = ref([]);
 const providerInfo = ref({ codex: null, openai: null });
 const loadingTypes = ref(false);
 const loadingProviders = ref(false);
+const loadingHandlers = ref(false);
 const submitting = ref(false);
 const err = ref("");
 const statusMsg = ref("");
@@ -197,6 +215,7 @@ const refreshingCreated = ref(false);
 const createdLogs = ref([]);
 const lastActionAt = ref("");
 const showAdvanced = ref(false);
+const runtimeHandlers = ref(null);
 let createdTimer = null;
 
 const form = ref({
@@ -249,6 +268,21 @@ const providerSummary = computed(() => {
   }
   return "";
 });
+const handlerRuntimeSummary = computed(() => {
+  const h = String(selectedType.value?.handler || "");
+  const rt = runtimeHandlers.value || {};
+  if (h === "builtin:tool.exec") {
+    const x = rt.tool_exec;
+    if (!x) return "tool.exec runtime unknown";
+    return x.enabled ? "tool.exec runtime enabled" : "tool.exec runtime disabled";
+  }
+  if (h === "builtin:data.fetch") {
+    const x = rt.data_fetch;
+    if (!x) return "data.fetch runtime unknown";
+    return x.enabled ? "data.fetch runtime enabled" : "data.fetch runtime disabled";
+  }
+  return "";
+});
 
 const createdLogsText = computed(() =>
   (createdLogs.value || [])
@@ -261,6 +295,13 @@ const createdResultText = computed(() => {
   if (!r) return "";
   if (typeof r.output_text === "string" && r.output_text.trim()) return r.output_text;
   return JSON.stringify(r, null, 2);
+});
+const { isReadOnly, queueAllowlist } = useAuthState();
+const hasQueueAllowlist = computed(() => Array.isArray(queueAllowlist.value) && queueAllowlist.value.length > 0);
+const queueAllowlistOptions = computed(() => (hasQueueAllowlist.value ? queueAllowlist.value.slice() : []));
+const queueAllowlistLabel = computed(() => {
+  if (!Array.isArray(queueAllowlist.value) || queueAllowlist.value.length < 1) return "all";
+  return queueAllowlist.value.join(",");
 });
 
 function parseInputJsonSafe(text) {
@@ -327,6 +368,9 @@ const validationErrors = computed(() => {
 
   if (!form.value.type) out.push("Job type is required.");
   if (!/^[a-z0-9._:-]{1,80}$/i.test(queue)) out.push("Queue must match ^[a-z0-9._:-]{1,80}$.");
+  if (Array.isArray(queueAllowlist.value) && queueAllowlist.value.length > 0 && !queueAllowlist.value.includes(queue)) {
+    out.push(`Queue '${queue}' is not allowed for this API key. Allowed: ${queueAllowlist.value.join(", ")}.`);
+  }
   if (!Number.isInteger(p) || p < 0 || p > 10) out.push("Priority must be an integer between 0 and 10.");
   if (!Number.isInteger(t) || t < 1 || t > 3600) out.push("Timeout must be an integer between 1 and 3600.");
   if (!Number.isInteger(a) || a < 1 || a > 10) out.push("Max attempts must be an integer between 1 and 10.");
@@ -354,12 +398,24 @@ const validationErrors = computed(() => {
   } else {
     const parsed = parseInputJsonSafe(form.value.inputText);
     if (!parsed.ok) out.push(parsed.error);
+    if (parsed.ok) {
+      const extra = validateTypeSpecificInput(form.value.type, parsed.value);
+      if (Array.isArray(extra) && extra.length > 0) out.push(...extra);
+    }
+  }
+
+  const handlerName = String(selectedType.value?.handler || "");
+  if (handlerName === "builtin:tool.exec" && runtimeHandlers.value?.tool_exec && runtimeHandlers.value.tool_exec.enabled === false) {
+    out.push("tool.exec runtime is disabled (TOOL_EXEC_ENABLED=0).");
+  }
+  if (handlerName === "builtin:data.fetch" && runtimeHandlers.value?.data_fetch && runtimeHandlers.value.data_fetch.enabled === false) {
+    out.push("data.fetch runtime is disabled (DATA_FETCH_ENABLED=0).");
   }
 
   return out;
 });
 
-const canSubmit = computed(() => validationErrors.value.length === 0 && !loadingTypes.value);
+const canSubmit = computed(() => !isReadOnly.value && validationErrors.value.length === 0 && !loadingTypes.value);
 
 function parseTags(text) {
   return (text || "")
@@ -450,8 +506,20 @@ async function loadProviders() {
   }
 }
 
+async function loadRuntimeHandlers() {
+  loadingHandlers.value = true;
+  try {
+    const r = await api.runtimeHandlers();
+    runtimeHandlers.value = r.handlers || null;
+  } catch {
+    runtimeHandlers.value = null;
+  } finally {
+    loadingHandlers.value = false;
+  }
+}
+
 async function reloadAll() {
-  await Promise.all([loadTypes(), loadProviders()]);
+  await Promise.all([loadTypes(), loadProviders(), loadRuntimeHandlers()]);
 }
 
 watch(selectedType, (t) => {
@@ -461,10 +529,27 @@ watch(selectedType, (t) => {
   if (isChatType.value) {
     form.value.inputText = "";
     if (!chat.value.prompt) chat.value.prompt = "";
+  } else {
+    const tmpl = getInputTemplateForType(t.name);
+    if (tmpl) form.value.inputText = JSON.stringify(tmpl, null, 2);
   }
 });
 
+watch(
+  () => queueAllowlist.value,
+  (list) => {
+    if (!Array.isArray(list) || list.length < 1) return;
+    const current = String(form.value.queue || "").trim() || "default";
+    if (!list.includes(current)) form.value.queue = list[0];
+  },
+  { immediate: true }
+);
+
 async function submit() {
+  if (isReadOnly.value) {
+    err.value = "Read-only API key: create job is disabled.";
+    return;
+  }
   err.value = "";
   statusMsg.value = "";
   createdJob.value = null;
@@ -499,13 +584,21 @@ async function submit() {
     await refreshCreated();
     startCreatedPolling();
   } catch (e) {
-    err.value = e.message || String(e);
+    const allowedQueues = Array.isArray(e?.data?.error?.details?.allowed_queues)
+      ? e.data.error.details.allowed_queues
+      : null;
+    if (e?.status === 403 && allowedQueues && allowedQueues.length > 0) {
+      err.value = `Queue policy blocked create. Allowed queues: ${allowedQueues.join(", ")}.`;
+    } else {
+      err.value = e.message || String(e);
+    }
   } finally {
     submitting.value = false;
   }
 }
 
 onMounted(async () => {
+  await refreshAuthState();
   await reloadAll();
 });
 

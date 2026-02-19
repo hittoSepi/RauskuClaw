@@ -66,6 +66,7 @@ function rowToSchedule(row) {
     name: row.name || null,
     enabled: !!row.enabled,
     type: row.type,
+    queue: row.queue || "default",
     input: safeJsonParse(row.input_json, null),
     priority: row.priority,
     timeout_sec: row.timeout_sec,
@@ -86,6 +87,7 @@ function createClaimOneTx(db) {
   const selectStmt = db.prepare(`
     SELECT
       id, name, enabled, type, input_json, priority, timeout_sec, max_attempts, tags_json,
+      queue,
       interval_sec, cron_expr, next_run_at, last_run_at, last_job_id, last_error_json, created_at, updated_at
     FROM job_schedules
     WHERE enabled = 1
@@ -150,10 +152,10 @@ function dispatchDueSchedules(db, opts = {}) {
   const claimOne = createClaimOneTx(db);
   const insertJobStmt = db.prepare(`
     INSERT INTO jobs (
-      id, type, status, priority, timeout_sec, max_attempts, attempts,
+      id, type, queue, status, priority, timeout_sec, max_attempts, attempts,
       callback_url, tags_json, input_json, created_at, updated_at
     )
-    VALUES (?, ?, 'queued', ?, ?, ?, 0, NULL, ?, ?, ?, ?)
+    VALUES (?, ?, ?, 'queued', ?, ?, ?, 0, NULL, ?, ?, ?, ?)
   `);
   const updateScheduleSuccessStmt = db.prepare(`
     UPDATE job_schedules
@@ -211,6 +213,7 @@ function dispatchDueSchedules(db, opts = {}) {
       insertJobStmt.run(
         jobId,
         schedule.type,
+        schedule.queue || "default",
         schedule.priority,
         timeoutSec,
         maxAttempts,

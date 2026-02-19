@@ -7,7 +7,7 @@ const { parseArgv, runCli } = require("../index");
 const { mapService, parseLogsArgs, analyzeSecurityLines, runLogs } = require("../commands/logs");
 const { getSmokeScriptPath, getSmokeScriptPathForSuite } = require("../commands/smoke");
 const { mergeEnvPreservingUnknown } = require("../lib/env");
-const { runSetup } = require("../commands/setup");
+const { runSetup, copyMissingFreshDeployTemplates } = require("../commands/setup");
 const { runRestart } = require("../commands/restart");
 const { runStart, parseStartArgs } = require("../commands/start");
 const { runDoctor, parseDoctorArgs } = require("../commands/doctor");
@@ -17,6 +17,7 @@ const { parseStopArgs } = require("../commands/stop");
 const { parseSmokeArgs, runSmoke } = require("../commands/smoke");
 const { parseCodexArgs, runCodex } = require("../commands/codex");
 const { parseMemoryArgs, runMemory } = require("../commands/memory");
+const { parseAuthArgs, runAuth } = require("../commands/auth");
 
 function mkRepo() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rauskuclaw-cli-test-"));
@@ -298,6 +299,25 @@ test("setup non-interactive writes .env using --set values", async () => {
   }
 });
 
+test("fresh_deploy templates seed only missing files", () => {
+  const repo = mkRepo();
+  try {
+    fs.mkdirSync(path.join(repo, "fresh_deploy", "templates", "workspace"), { recursive: true });
+    fs.writeFileSync(path.join(repo, "fresh_deploy", "templates", "workspace", "AGENTS.md"), "# template agents\n", "utf8");
+    fs.writeFileSync(path.join(repo, "fresh_deploy", "templates", "workspace", "USER.md"), "# template user\n", "utf8");
+    fs.mkdirSync(path.join(repo, "workspace"), { recursive: true });
+    fs.writeFileSync(path.join(repo, "workspace", "AGENTS.md"), "# existing agents\n", "utf8");
+
+    const seeded = copyMissingFreshDeployTemplates(repo);
+    assert.equal(seeded.includes("workspace/USER.md"), true);
+    assert.equal(seeded.includes("workspace/AGENTS.md"), false);
+    assert.equal(fs.readFileSync(path.join(repo, "workspace", "AGENTS.md"), "utf8"), "# existing agents\n");
+    assert.equal(fs.readFileSync(path.join(repo, "workspace", "USER.md"), "utf8"), "# template user\n");
+  } finally {
+    rmDir(repo);
+  }
+});
+
 test("doctor parser supports --json", () => {
   assert.deepEqual(parseDoctorArgs(["--json"]), { json: true, fixHints: false });
   assert.deepEqual(parseDoctorArgs(["--fix-hints"]), { json: false, fixHints: true });
@@ -430,6 +450,68 @@ test("memory reset command posts to API and prints json", async () => {
     assert.equal(parsed.command, "memory.reset");
     assert.equal(parsed.scope, "agent.chat");
     assert.equal(parsed.deleted_memories, 3);
+  } finally {
+    global.fetch = origFetch;
+    process.stdout.write = origWrite;
+    rmDir(repo);
+  }
+});
+
+test("auth parser validates whoami command", () => {
+  assert.deepEqual(parseAuthArgs(["whoami"]), {
+    sub: "whoami",
+    apiBase: "",
+    json: false
+  });
+  assert.deepEqual(parseAuthArgs(["whoami", "--api", "http://127.0.0.1:3009", "--json"]), {
+    sub: "whoami",
+    apiBase: "http://127.0.0.1:3009",
+    json: true
+  });
+  assert.throws(() => parseAuthArgs([]), /Usage: rauskuclaw auth whoami/);
+  assert.throws(() => parseAuthArgs(["bad"]), /Usage: rauskuclaw auth whoami/);
+});
+
+test("auth whoami command calls API and prints json", async () => {
+  const repo = mkRepo();
+  const envPath = path.join(repo, ".env");
+  fs.writeFileSync(envPath, "API_KEY=test-key\nPORT=3901\n", "utf8");
+
+  const origFetch = global.fetch;
+  const origWrite = process.stdout.write;
+  let out = "";
+  process.stdout.write = (s) => { out += String(s); return true; };
+  global.fetch = async (url, init) => {
+    assert.equal(url, "http://127.0.0.1:3901/v1/auth/whoami");
+    assert.equal(init?.method, "GET");
+    assert.equal(init?.headers?.["x-api-key"], "test-key");
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        ok: true,
+        auth: {
+          name: "read-only",
+          role: "read",
+          sse: false,
+          can_write: false,
+          queue_allowlist: ["alpha", "default"]
+        }
+      })
+    };
+  };
+
+  try {
+    const code = await runAuth({ repoRoot: repo }, ["whoami", "--json"]);
+    assert.equal(code, 0);
+    const parsed = JSON.parse(out);
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.command, "auth.whoami");
+    assert.equal(parsed.auth.name, "read-only");
+    assert.equal(parsed.auth.role, "read");
+    assert.equal(parsed.auth.sse, false);
+    assert.equal(parsed.auth.can_write, false);
+    assert.deepEqual(parsed.auth.queue_allowlist, ["alpha", "default"]);
   } finally {
     global.fetch = origFetch;
     process.stdout.write = origWrite;

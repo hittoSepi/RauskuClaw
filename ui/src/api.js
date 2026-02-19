@@ -42,7 +42,13 @@ async function request(path, { method = "GET", body, headers = {} } = {}) {
 
 export const api = {
   ping: () => request("/v1/ping"),
+  authWhoami: () => request("/v1/auth/whoami"),
   runtimeProviders: () => request("/v1/runtime/providers"),
+  runtimeHandlers: () => request("/v1/runtime/handlers"),
+  prewarmRepoContext: (payload = {}) => request("/v1/runtime/repo-context/prewarm", {
+    method: "POST",
+    body: payload
+  }),
   uiPrefs: (scope = "default") => request(`/v1/ui-prefs?scope=${encodeURIComponent(String(scope || "default"))}`),
   saveUiPrefs: (scope = "default", prefs = {}) => request(`/v1/ui-prefs?scope=${encodeURIComponent(String(scope || "default"))}`, {
     method: "PUT",
@@ -134,6 +140,10 @@ export const api = {
     const qs = new URLSearchParams(params).toString();
     return request("/v1/memory" + (qs ? `?${qs}` : ""));
   },
+  createMemory: (payload) => request("/v1/memory", {
+    method: "POST",
+    body: payload
+  }),
   memoryReset: ({ scope } = {}) => request("/v1/memory/reset", {
     method: "POST",
     body: {
@@ -145,5 +155,23 @@ export const api = {
     method: "POST",
     body: payload,
     headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}
-  })
+  }),
+  submitJobIntent: (payload) => request("/v1/jobs/submit-intent", {
+    method: "POST",
+    body: payload
+  }),
+  // Working Memory API
+  workingMemory: (params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return request("/v1/working-memory" + (qs ? `?${qs}` : ""));
+  },
+  workingMemoryLatest: () => request("/v1/working-memory/latest"),
+  saveWorkingMemory: (payload) => request("/v1/working-memory", {
+    method: "POST",
+    body: payload
+  }),
+  clearWorkingMemory: (sessionId) => request(
+    `/v1/working-memory?session_id=${encodeURIComponent(sessionId)}`,
+    { method: "DELETE" }
+  )
 };

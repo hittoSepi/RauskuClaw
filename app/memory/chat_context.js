@@ -115,6 +115,55 @@ function readScopeAvailability(db, scope) {
   };
 }
 
+function readScopeRecentRows(db, { scope, query, limit }) {
+  const now = nowIso();
+  const q = String(query || "").trim().toLowerCase();
+  const words = Array.from(new Set(
+    q
+      .split(/\s+/)
+      .map((w) => w.replace(/[^a-z0-9._:-]/gi, "").trim())
+      .filter((w) => w.length >= 3)
+      .slice(0, 8)
+  ));
+
+  const rows = db.prepare(`
+    SELECT
+      m.id,
+      m.scope,
+      m.key,
+      m.value_json,
+      m.tags_json,
+      m.created_at,
+      m.updated_at,
+      m.embedding_status
+    FROM memories m
+    WHERE m.scope = ?
+      AND (m.expires_at IS NULL OR m.expires_at > ?)
+    ORDER BY m.updated_at DESC
+    LIMIT ?
+  `).all(scope, now, Math.max(1, Number(limit) || 10));
+
+  const scoreRow = (row) => {
+    const key = String(row?.key || "").toLowerCase();
+    const value = String(row?.value_json || "").toLowerCase();
+    if (!words.length) return 0;
+    let score = 0;
+    for (const w of words) {
+      if (key.includes(w)) score += 2;
+      if (value.includes(w)) score += 1;
+    }
+    return score;
+  };
+
+  return (Array.isArray(rows) ? rows : [])
+    .map((row) => ({ row, score: scoreRow(row) }))
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return String(b.row?.updated_at || "").localeCompare(String(a.row?.updated_at || ""));
+    })
+    .map((x) => x.row);
+}
+
 function rowToContextMatch(row) {
   const distance = Number(row?.distance);
   const safeDistance = Number.isFinite(distance) ? distance : null;
@@ -129,8 +178,42 @@ function rowToContextMatch(row) {
     distance: safeDistance,
     value,
     tags: Array.isArray(tags) ? tags : [],
-    updated_at: row?.updated_at || null
+    updated_at: row?.updated_at || null,
+    created_at: row?.created_at || null,
+    embedded_at: row?.embedded_at || null,
+    embedding_status: row?.embedding_status || null
   };
+}
+
+function resolveRowRecencyTs(row) {
+  const candidates = [
+    row?.updated_at,
+    row?.created_at,
+    row?.embedded_at
+  ];
+  for (const c of candidates) {
+    const ts = Date.parse(String(c || ""));
+    if (Number.isFinite(ts)) return ts;
+  }
+  return Number.NaN;
+}
+
+function compareRowsByRecencyDesc(a, b) {
+  const aTs = resolveRowRecencyTs(a);
+  const bTs = resolveRowRecencyTs(b);
+  const aValid = Number.isFinite(aTs);
+  const bValid = Number.isFinite(bTs);
+  if (aValid && bValid && aTs !== bTs) return bTs - aTs;
+  if (aValid && !bValid) return -1;
+  if (!aValid && bValid) return 1;
+  const aDist = Number(a?.distance);
+  const bDist = Number(b?.distance);
+  const aDistValid = Number.isFinite(aDist);
+  const bDistValid = Number.isFinite(bDist);
+  if (aDistValid && bDistValid && aDist !== bDist) return aDist - bDist;
+  if (aDistValid && !bDistValid) return -1;
+  if (!aDistValid && bDistValid) return 1;
+  return String(a?.id || "").localeCompare(String(b?.id || ""));
 }
 
 function buildContextInstruction(context) {
@@ -165,19 +248,6 @@ async function buildChatMemoryContext({ db, settings, request, embed = embedText
   }
 
   const availability = readScopeAvailability(db, request.scope);
-  if (availability.pendingCount > 0 || availability.failedCount > 0 || availability.missingVectorCount > 0) {
-    throw createMemoryError(
-      "MEMORY_CONTEXT_UNAVAILABLE",
-      "Memory context unavailable because some scope rows are not embedded yet.",
-      {
-        reason: "MEMORY_EMBEDDING_UNAVAILABLE",
-        scope: request.scope,
-        pending_count: availability.pendingCount,
-        failed_count: availability.failedCount,
-        missing_vector_count: availability.missingVectorCount
-      }
-    );
-  }
 
   let embedded;
   try {
@@ -214,11 +284,33 @@ async function buildChatMemoryContext({ db, settings, request, embed = embedText
     );
   }
 
-  const matches = (rows || []).map(rowToContextMatch);
+  const vectorRows = Array.isArray(rows) ? rows : [];
+  const recentRows = readScopeRecentRows(db, {
+    scope: request.scope,
+    query: request.query,
+    limit: Math.max(request.topK * 3, 20)
+  });
+  const seen = new Set();
+  const mergedRows = [];
+  for (const row of vectorRows) {
+    const id = String(row?.id || "").trim();
+    if (id) seen.add(id);
+    mergedRows.push(row);
+  }
+  for (const row of recentRows) {
+    if (mergedRows.length >= request.topK) break;
+    const id = String(row?.id || "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    mergedRows.push(row);
+  }
+  const prioritizedRows = mergedRows.sort(compareRowsByRecencyDesc);
+  const matches = prioritizedRows.slice(0, request.topK).map(rowToContextMatch);
   const context = {
     request,
     embeddingModel: embedded?.model || null,
-    matches
+    matches,
+    availability
   };
   context.instruction = buildContextInstruction(context);
   return context;

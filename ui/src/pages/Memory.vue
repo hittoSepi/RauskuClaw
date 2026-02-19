@@ -47,7 +47,7 @@
             <button class="btn" @click="openScope(s.scope)" :disabled="resetLoading">
               View
             </button>
-            <button class="btn danger" @click="resetScope(s.scope)" :disabled="resetLoading">
+            <button class="btn danger" @click="resetScope(s.scope)" :disabled="resetLoading || isReadOnly">
               Reset scope
             </button>
           </td>
@@ -69,12 +69,15 @@
         />
         <button
           class="btn danger"
-          :disabled="!canResetAll || resetLoading"
+          :disabled="!canResetAll || resetLoading || isReadOnly"
           @click="resetAll"
         >
           {{ resetLoading ? "Resetting..." : "Reset all memory" }}
         </button>
       </div>
+    </div>
+    <div v-if="isReadOnly" class="memory-status err" style="margin-top: 10px; color: #f59e0b">
+      Read-only API key active: memory reset actions are disabled.
     </div>
 
     <div v-if="selectedScope" class="memory-details">
@@ -119,6 +122,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from "vue";
 import { api } from "../api.js";
+import { refreshAuthState, useAuthState } from "../auth_state.js";
 
 const scopes = ref([]);
 const query = ref("");
@@ -131,6 +135,7 @@ const err = ref("");
 const resetAllConfirmText = ref("");
 const selectedScope = ref("");
 const scopeRows = ref([]);
+const { isReadOnly } = useAuthState();
 
 const canResetAll = computed(() => resetAllConfirmText.value === "RESET ALL");
 const filteredScopes = computed(() => {
@@ -156,6 +161,7 @@ async function loadScopes() {
 }
 
 async function resetScope(scope) {
+  if (isReadOnly.value) return;
   if (resetLoading.value) return;
   const target = String(scope || "").trim();
   if (!target) return;
@@ -177,6 +183,7 @@ async function resetScope(scope) {
 }
 
 async function resetAll() {
+  if (isReadOnly.value) return;
   if (!canResetAll.value || resetLoading.value) return;
   const ok = window.confirm("Reset ALL memory scopes?");
   if (!ok) return;
@@ -248,6 +255,7 @@ watch(includeExpired, () => {
 });
 
 onMounted(() => {
+  void refreshAuthState();
   void loadScopes();
 });
 </script>

@@ -18,7 +18,17 @@
         <option v-for="t in typeNames" :key="t" :value="t">{{ t }}</option>
       </select>
 
+      <select
+        v-if="hasQueueAllowlist"
+        class="select"
+        v-model="queue"
+        style="width: 170px"
+      >
+        <option value="">all queues</option>
+        <option v-for="qName in queueAllowlist" :key="qName" :value="qName">{{ qName }}</option>
+      </select>
       <input
+        v-else
         class="input"
         v-model.trim="queue"
         placeholder="queue (default)"
@@ -39,6 +49,9 @@
 
       <button class="btn" @click="clearFilters" :disabled="loading || (!status && !type && !queue)">Clear filters</button>
       <button class="btn" @click="load" :disabled="loading">{{ loading ? "Refreshing..." : "Refresh" }}</button>
+    </div>
+    <div v-if="queueAllowlistLabel !== 'all'" style="margin-bottom: 10px; color: var(--muted); font-size: 12px">
+      Queue scope: {{ queueAllowlistLabel }} (applied by API key policy)
     </div>
 
     <table class="table">
@@ -90,6 +103,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import { api } from "../api.js";
+import { refreshAuthState, useAuthState } from "../auth_state.js";
 
 const status = ref("");
 const type = ref("");
@@ -101,11 +115,17 @@ const types = ref([]);
 const err = ref("");
 const loading = ref(false);
 const lastLoadedAt = ref("");
+const { queueAllowlist } = useAuthState();
 let lastLoadId = 0;
 let filterTimer = null;
 let autoTimer = null;
 
 const typeNames = computed(() => types.value.map(t => t.name));
+const queueAllowlistLabel = computed(() => {
+  if (!Array.isArray(queueAllowlist.value) || queueAllowlist.value.length < 1) return "all";
+  return queueAllowlist.value.join(",");
+});
+const hasQueueAllowlist = computed(() => Array.isArray(queueAllowlist.value) && queueAllowlist.value.length > 0);
 const visibleJobs = computed(() => {
   const needle = q.value.trim().toLowerCase();
   if (!needle) return jobs.value;
@@ -142,7 +162,14 @@ async function load() {
     lastLoadedAt.value = new Date().toLocaleTimeString();
   } catch (e) {
     if (loadId !== lastLoadId) return;
-    err.value = e.message || String(e);
+    const allowedQueues = Array.isArray(e?.data?.error?.details?.allowed_queues)
+      ? e.data.error.details.allowed_queues
+      : null;
+    if (e?.status === 403 && allowedQueues && allowedQueues.length > 0) {
+      err.value = `Queue '${queue.value || "(all)"}' is not allowed for this API key. Allowed queues: ${allowedQueues.join(", ")}.`;
+    } else {
+      err.value = e.message || String(e);
+    }
   } finally {
     if (loadId === lastLoadId) loading.value = false;
   }
@@ -175,8 +202,18 @@ watch(autoRefresh, (enabled) => {
 });
 
 onMounted(async () => {
+  await refreshAuthState();
   await load();
 });
+
+watch(
+  () => queueAllowlist.value,
+  (list) => {
+    if (!Array.isArray(list) || list.length < 1) return;
+    if (queue.value && !list.includes(queue.value)) queue.value = "";
+  },
+  { immediate: true }
+);
 
 onBeforeUnmount(() => {
   if (filterTimer) clearTimeout(filterTimer);

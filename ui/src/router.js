@@ -8,6 +8,8 @@ const Chat = () => import("./pages/Chat.vue");
 const Schedules = () => import("./pages/Schedules.vue");
 const Settings = () => import("./pages/Settings.vue");
 const Memory = () => import("./pages/Memory.vue");
+const Prompts = () => import("./pages/Prompts.vue");
+const Tools = () => import("./pages/Tools.vue");
 
 export default createRouter({
   history: createWebHistory("/ui/"),
@@ -25,6 +27,8 @@ export default createRouter({
         { path: "schedules", component: Schedules },
         { path: "types", component: Types },
         { path: "memory", component: Memory },
+        { path: "tools", component: Tools },
+        { path: "prompts", component: Prompts },
         { path: "memory-reset", redirect: "/settings/memory" }
       ]
     },

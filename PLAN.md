@@ -194,7 +194,102 @@ Exit Criteria:
 - Contributor can reproduce milestone outcomes locally.
 
 ## Changelog
+- 2026-02-18:
+  - MEMORY/context strategy update:
+    - repo-context summarization narrowed to `IDENTITY.md` and `SOUL.md` only.
+    - other injected repo-context sources now stay full-text (within existing size caps).
+    - clear/new-session flow now runs an agent summary warmup for `IDENTITY.md` + `SOUL.md` before greeting.
+    - warmup summary is stored as hidden assistant context (not shown in normal chat stream).
+  - Chat routing upgrade:
+    - replaced pure UI heuristic routing with dedicated router-agent decision (`ROUTE: planner|agent`) in auto mode.
+    - manual planner toggle remains hard override.
+  - Chat run UX upgrade:
+    - pending state now shows `Thinking... (Ns)` timer.
+    - composer send button now becomes `Stop` during active run and cancels current chat job.
+  - Memory context visibility + continuity upgrades:
+    - prompt trace now explicitly shows injected `memory` config/query and `memory_write` config.
+    - memory query backlog entries now include per-entry timestamps.
+    - memory query length now scales with `chatMaxPromptTokens` (`~max_tokens/2`) and compacts older history automatically when needed.
+  - Suggested-job resilience upgrades:
+    - parser now supports truncated/unfenced `rausku_jobs` recovery.
+    - UI auto-repair and retry extended for `data.write_file` validation errors (`content_base64`, mutually exclusive content fields).
+  - Added near-memory retrieval fallback for chat context:
+    - `buildChatMemoryContext` now merges vector hits with recent `memories` rows in same scope.
+    - fallback allows fresh `embedding_status='pending'` entries to be used before embed sync is finished.
+    - duplicates are removed and final context remains capped by `top_k`.
+    - chat-context test coverage updated for sparse-vector fallback path.
+  - Chat memory continuity + UX updates:
+    - internal auto-continue prompts are now echoed as `SYSTEM` messages (instead of `You`) and persisted to near-memory.
+    - chat side panel split into `Job List` and `Memory Writes`.
+    - `Memory Writes` rows are expandable to inspect written assistant content.
+  - Planner/suggested-job hardening:
+    - prompt guardrails added to avoid suggesting `system.memory.embed.sync` without explicit `input.memory_id`.
+    - suggested-job auto-repair extended for `system.memory.embed.sync requires input.memory_id`.
 - 2026-02-17:
+  - Chat provider fallback usability hardening:
+    - chat send path now auto-falls back to alternative enabled chat type when selected provider runtime is disabled
+    - trace/status now explicitly reports automatic fallback decision (`codex.chat.generate` <-> `ai.chat.generate`)
+    - prevents avoidable send-block states when one provider runtime is down but the other is operational
+  - Chat provider runtime selection hardening:
+    - Chat page now reads `/v1/runtime/providers` when loading chat types
+    - default chat type selection auto-follows enabled runtime provider (`codex.chat.generate` vs `ai.chat.generate`)
+    - send is blocked with explicit reason when selected provider runtime is disabled
+  - Added runtime guardrail awareness to Create Job UI:
+    - create form now loads runtime handler status (`/v1/runtime/handlers`) alongside types/providers
+    - `tool.exec` and `data.fetch` creation now shows runtime enabled/disabled status badge
+    - client validation blocks submit when selected runtime handler is disabled
+  - Added Settings runtime diagnostics section for built-in handlers:
+    - Settings UI now loads and displays `GET /v1/runtime/handlers`
+    - includes enabled-state and runtime guardrail values (timeouts/max-bytes) when available
+    - added manual "Reload handlers" action for operator refresh
+  - Added runtime built-in handler diagnostics endpoint:
+    - new `GET /v1/runtime/handlers` shows current guardrail/runtime status for `deploy`, `tool_exec`, `data_fetch`
+    - read role gets redacted enabled-only view; admin role gets detailed allowlist/timeout/max-bytes view
+    - added API coverage for read/admin response shape (`app/test/auth_api.test.js`)
+  - Improved Create Job UX for new tool handlers:
+    - added type-specific input templates in UI create form for `tool.exec` and `data.fetch`
+    - added client-side type-specific validation mirroring API guardrails for risky inputs
+    - extracted template/validation helpers to `ui/src/job_input_templates.js`
+    - added UI unit coverage for templates and validation (`ui/test/job_input_templates.test.mjs`)
+  - Hardened create-time validation for risky built-in handlers:
+    - `POST /v1/jobs` now validates `tool.exec` and `data.fetch` input shape before enqueue
+    - prevents malformed high-risk jobs from entering retry loops in worker
+    - added API regression coverage for handler-specific validation (`app/test/jobs_queue_api.test.js`)
+  - Continued backlog item "Richer built-in handlers and external tool ecosystem":
+    - upgraded `builtin:data.fetch` from hard-disabled stub to allowlisted HTTPS fetch tool
+    - execution remains disabled by default and requires explicit domain allowlist (`DATA_FETCH_ENABLED`, `DATA_FETCH_ALLOWLIST`)
+    - added timeout and payload-size guardrails (`DATA_FETCH_TIMEOUT_MS`, `DATA_FETCH_MAX_BYTES`)
+    - added unit coverage for fetch success-path, allowlist enforcement, and payload clipping (`app/test/data_fetch_handler.test.js`)
+  - Continued backlog item "Richer built-in handlers and external tool ecosystem":
+    - added new built-in command execution handler `builtin:tool.exec` with safe defaults
+    - execution is disabled by default and guarded by explicit command allowlist
+    - command execution uses non-shell spawn path with bounded output and timeout handling
+    - added unit coverage for allowlist, success-path, and timeout behavior (`app/test/tool_exec_handler.test.js`)
+  - Continued backlog item "Richer built-in handlers and external tool ecosystem":
+    - upgraded `builtin:design.frontpage.layout` from static stub to validated frontpage-layout plan generator
+    - output now includes normalized style metadata and section-level structure (`hero`, `features`, `social-proof`, `cta`, `footer`)
+    - validates layout intent inputs (`tone`, `audience`, `primary_action`, `feature_count`)
+    - added unit coverage for layout handler behavior (`app/test/layout_handler.test.js`)
+  - Continued backlog item "Richer built-in handlers and external tool ecosystem":
+    - upgraded `builtin:code.component.generate` from static stub to validated template generator
+    - supports `vue`/`react` frameworks and `ts`/`js` language modes
+    - validates `component_name` with deterministic file naming/output shape
+    - added unit coverage for component handler behavior (`app/test/component_handler.test.js`)
+  - Continued backlog item "Richer built-in handlers and external tool ecosystem":
+    - upgraded `builtin:deploy.run` from static stub to structured dry-run plan builder
+    - enforces validated `target`, `strategy`, and `services` inputs with deterministic output shape
+    - keeps safe MVP posture by rejecting non-dry-run execution (`dry_run=false`)
+    - added unit coverage for deploy handler behavior (`app/test/deploy_handler.test.js`)
+  - Started backlog item "Richer built-in handlers and external tool ecosystem":
+    - upgraded `builtin:report.generate` from static stub to structured report builder
+    - report output now includes `generated_at`, normalized `title/source`, `metrics`, `highlights`, and deterministic summary text
+    - supports direct metric map input (`input.metrics`) and fallback numeric-stat derivation from `input.values`
+    - added unit coverage for report handler behavior (`app/test/report_handler.test.js`)
+  - Advanced auth queue scoping (runtime metrics):
+    - `/v1/runtime/metrics` now accepts optional `queue` filter with queue-name validation
+    - queue-allowlisted API keys now receive queue-scoped job status + alert evaluation in metrics response
+    - queue filter outside key allowlist now returns `403 FORBIDDEN` with `allowed_queues` details
+    - added API integration coverage for metrics queue scope (`app/test/runtime_metrics.test.js`)
   - Hardened chat suggested-job parsing maintainability:
     - extracted `parseSuggestedJobs` from `Chat.vue` to `ui/src/suggested_jobs.js`
     - added UI unit tests for fenced-block parsing/normalization (`ui/test/suggested_jobs.test.mjs`)
@@ -233,6 +328,28 @@ Exit Criteria:
     - added `ui` command `npm run icons:export` and dependencies `@iconify/utils` + `@iconify-json/vscode-icons`
     - generated selected file icons to `ui/public/file-icons/*` with manifest metadata
     - file explorer now renders SVG icons from exported assets with token fallback
+  - Advanced authN/authZ hardening (SSE path):
+    - added API test coverage for SSE auth behavior with per-key `sse` flag and query-parameter API key flow
+    - verifies `sse: false` key is rejected with `403 FORBIDDEN`
+    - verifies allowed SSE query-key path authenticates and reaches route-level `NOT_FOUND` behavior
+  - Advanced authN/authZ hardening (provider runtime visibility):
+    - `/v1/runtime/providers` now returns redacted response for `read` role keys (enabled-state only)
+    - admin role retains full provider runtime detail response
+    - added API test coverage verifying read/admin response shape difference
+  - Added auth diagnostics endpoint:
+    - new `GET /v1/auth/whoami` returns effective API principal (`name`, `role`, `sse`, `can_write`)
+    - wired from existing auth middleware principal resolution
+    - added API tests for read/admin key behavior on whoami response
+  - Added CLI auth diagnostics command:
+    - new command `rauskuclaw auth whoami [--api <baseUrl>] [--json]`
+    - wired to `/v1/auth/whoami` with env/.env API base and API key resolution
+    - added CLI parser + command tests and documentation updates (`README.md`, `docs/CLI.md`)
+  - Added UI auth diagnostics in Settings:
+    - Settings page now fetches and displays effective auth principal (`name`, `role`, `sse`, `can_write`) via `/v1/auth/whoami`
+    - added manual "Reload identity" action and inline auth error handling in settings UI
+  - Added top-level auth status indicator in UI shell:
+    - app status bar now displays current auth role from `/v1/auth/whoami` (alongside API ping)
+    - status refreshes on initial load and when API key is saved
   - Completed backlog item "Multi-queue foundation (phase 1)":
     - added `jobs.queue` column + migration guard for existing databases
     - added queue-aware indexing and safe migration ordering
@@ -242,6 +359,23 @@ Exit Criteria:
     - worker queue processing is now scoped by allowlist:
       - `worker.queue.allowlist_env`
       - `worker.queue.default_allowed`
+  - Advanced auth queue scoping:
+    - added per-key `queue_allowlist` support in API auth entries (`API_KEYS_JSON` / `api.auth.keys`)
+    - `POST /v1/jobs` now enforces queue membership for keys with an allowlist
+    - job visibility/actions are now queue-scoped for allowlisted keys:
+      - `GET /v1/jobs`, `GET /v1/jobs/:id`, `GET /v1/jobs/:id/logs`, `GET /v1/jobs/:id/stream`, `POST /v1/jobs/:id/cancel`
+    - `GET /v1/auth/whoami` now includes effective `queue_allowlist`
+    - added auth API coverage for queue-allowlist enforcement and whoami shape
+  - Extended queue model to schedules:
+    - added `job_schedules.queue` column with migration guard for existing DBs
+    - scheduler dispatch now enqueues jobs into schedule-defined queue (instead of implicit default)
+    - `/v1/schedules` create/list/patch/get/delete now support and enforce queue scoping
+    - added API and scheduler test coverage for schedule queue behavior
+    - added schedule queue index (`idx_job_schedules_queue_enabled_next_run_at`) for queue-filter and dispatch-adjacent lookups
+  - Updated schedules UI for queue-aware operations:
+    - added queue filter in `/settings/schedules` (allowlist-aware)
+    - added queue field to schedule create/edit flows
+    - added read-only and queue-policy error handling for schedule mutations
       - `WORKER_QUEUE_ALLOWLIST`
     - docs/config surfaces updated (`README.md`, `docs/CONFIG.md`, `.env.example`, `rauskuclaw.json`, CLI setup prompts)
     - added queue API regression coverage (`app/test/jobs_queue_api.test.js`)

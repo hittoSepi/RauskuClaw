@@ -68,5 +68,15 @@ services:
       # UI on localhost, host Nginx maps /ui/ to this
       - "127.0.0.1:3002:8080"
 
+  rauskuclaw-ui-v2:
+    build:
+      context: ./ui-v2
+      dockerfile: Dockerfile
+    container_name: rauskuclaw-ui-v2
+    restart: unless-stopped
+    ports:
+      # UI-v2 on localhost port 3003
+      - "127.0.0.1:3003:8080"
+
 volumes:
   ollama_data:

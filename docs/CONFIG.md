@@ -58,7 +58,8 @@ rauskuclaw start
 - `api.auth.required`
   - whether API auth is required by default
 - `api.auth.keys`
-  - optional multi-key auth entries (`name`, `key`, `role=admin|read`, `sse`)
+  - optional multi-key auth entries (`name`, `key`, `role=admin|read`, `sse`, `queue_allowlist`)
+  - `queue_allowlist` can be a JSON array (or comma-separated string) of allowed queue names for that key
   - when set, this model is used instead of legacy single `API_KEY`
 - `api.auth.allow_without_key_when`
   - explicit dev bypass condition (`API_AUTH_DISABLED=1`)
@@ -118,6 +119,62 @@ rauskuclaw start
   - minimum completed jobs required before failure-rate alerting
 - `handlers.deploy.allowlist_env`
   - allowed deploy targets env var (`DEPLOY_TARGET_ALLOWLIST`)
+- `handlers.exec.enabled_env`
+  - env var that enables command execution handler (`TOOL_EXEC_ENABLED`)
+- `handlers.exec.allowlist_env`
+  - env var with comma-separated allowed commands for `tool.exec` (`TOOL_EXEC_ALLOWLIST`)
+- `handlers.exec.timeout_env`
+  - env var for default command timeout ms (`TOOL_EXEC_TIMEOUT_MS`)
+- `handlers.exec.default_timeout_ms`
+  - fallback timeout for `tool.exec` when env is not set
+- `handlers.exec.default_allowed_commands`
+  - optional config-level fallback allowlist when env allowlist is empty
+- `handlers.data_fetch.enabled_env`
+  - env var that enables URL fetch handler (`DATA_FETCH_ENABLED`)
+- `handlers.data_fetch.allowlist_env`
+  - env var with comma-separated allowed domains for `data.fetch` (`DATA_FETCH_ALLOWLIST`)
+- `handlers.data_fetch.timeout_env`
+  - env var for default fetch timeout ms (`DATA_FETCH_TIMEOUT_MS`)
+- `handlers.data_fetch.max_bytes_env`
+  - env var for max fetch payload bytes (`DATA_FETCH_MAX_BYTES`)
+- `handlers.data_fetch.default_timeout_ms`
+  - fallback timeout for `data.fetch` when env is not set
+- `handlers.data_fetch.default_max_bytes`
+  - fallback max payload bytes for `data.fetch`
+- `handlers.data_fetch.default_allowed_domains`
+  - optional config-level fallback domain allowlist when env allowlist is empty
+- `handlers.file_read.enabled_env`
+  - env var that enables workspace file-read handler (`DATA_FILE_READ_ENABLED`)
+- `handlers.file_read.max_bytes_env`
+  - env var for max file-read payload bytes (`DATA_FILE_READ_MAX_BYTES`)
+- `handlers.file_read.workspace_root`
+  - workspace root path used for `data.file_read` path sandboxing
+- `handlers.file_read.default_max_bytes`
+  - fallback max payload bytes for `data.file_read`
+- `handlers.web_search.enabled_env`
+  - env var that enables web search handler (`WEB_SEARCH_ENABLED`)
+- `handlers.web_search.provider_env`
+  - env var for search provider (`WEB_SEARCH_PROVIDER`)
+- `handlers.web_search.timeout_env`
+  - env var for default search timeout ms (`WEB_SEARCH_TIMEOUT_MS`)
+- `handlers.web_search.max_results_env`
+  - env var for default max result count (`WEB_SEARCH_MAX_RESULTS`)
+- `handlers.web_search.base_url_env`
+  - env var for search provider base URL (`WEB_SEARCH_BASE_URL`)
+- `handlers.web_search.brave_api_key_env`
+  - env var for Brave API key (`WEB_SEARCH_BRAVE_API_KEY`)
+- `handlers.web_search.brave_endpoint_env`
+  - env var for Brave endpoint (`WEB_SEARCH_BRAVE_ENDPOINT`)
+- `handlers.web_search.default_provider`
+  - fallback provider (`duckduckgo` or `brave`)
+- `handlers.web_search.default_timeout_ms`
+  - fallback timeout for `tools.web_search` when env is not set
+- `handlers.web_search.default_max_results`
+  - fallback max results for `tools.web_search`
+- `handlers.web_search.default_base_url`
+  - fallback base URL for `tools.web_search`
+- `handlers.web_search.default_brave_endpoint`
+  - fallback Brave search endpoint for `tools.web_search`
 
 ### Providers
 - `providers.codex_oss.enabled`
@@ -141,6 +198,10 @@ rauskuclaw start
   - env variable name that stores API key (`OPENAI_API_KEY`)
 - `providers.openai.base_url`
   - OpenAI-compatible base URL (`OPENAI_BASE_URL`)
+- `providers.openai.chat_completions_path`
+  - OpenAI-compatible chat completions path (`OPENAI_CHAT_COMPLETIONS_PATH`)
+  - default: `/v1/chat/completions`
+  - may also be a full URL when provider requires it
 - `providers.openai.model`
   - default model (`OPENAI_MODEL`)
 - `providers.openai.timeout_ms`
@@ -252,6 +313,22 @@ Chat workspace UI notes:
 - `SCHEDULER_BATCH_SIZE -> worker.scheduler.batch_size`
 - `SCHEDULER_CRON_TZ -> worker.scheduler.cron_timezone`
 - `DEPLOY_TARGET_ALLOWLIST -> handlers.deploy.allowlist_env`
+- `TOOL_EXEC_ENABLED -> handlers.exec.enabled_env`
+- `TOOL_EXEC_ALLOWLIST -> handlers.exec.allowlist_env`
+- `TOOL_EXEC_TIMEOUT_MS -> handlers.exec.timeout_env`
+- `DATA_FETCH_ENABLED -> handlers.data_fetch.enabled_env`
+- `DATA_FETCH_ALLOWLIST -> handlers.data_fetch.allowlist_env`
+- `DATA_FETCH_TIMEOUT_MS -> handlers.data_fetch.timeout_env`
+- `DATA_FETCH_MAX_BYTES -> handlers.data_fetch.max_bytes_env`
+- `DATA_FILE_READ_ENABLED -> handlers.file_read.enabled_env`
+- `DATA_FILE_READ_MAX_BYTES -> handlers.file_read.max_bytes_env`
+- `WEB_SEARCH_ENABLED -> handlers.web_search.enabled_env`
+- `WEB_SEARCH_PROVIDER -> handlers.web_search.provider_env`
+- `WEB_SEARCH_TIMEOUT_MS -> handlers.web_search.timeout_env`
+- `WEB_SEARCH_MAX_RESULTS -> handlers.web_search.max_results_env`
+- `WEB_SEARCH_BASE_URL -> handlers.web_search.base_url_env`
+- `WEB_SEARCH_BRAVE_API_KEY -> handlers.web_search.brave_api_key_env`
+- `WEB_SEARCH_BRAVE_ENDPOINT -> handlers.web_search.brave_endpoint_env`
 - `CALLBACK_ALLOWLIST -> callbacks.allowlist_env`
 - `CALLBACK_SIGNING_ENABLED -> callbacks.signing.enabled`
 - `CALLBACK_SIGNING_SECRET -> callbacks.signing.secret_env`
@@ -280,6 +357,7 @@ Chat workspace UI notes:
 - `OPENAI_ENABLED -> providers.openai.enabled`
 - `OPENAI_API_KEY -> providers.openai.api_key_env`
 - `OPENAI_BASE_URL -> providers.openai.base_url`
+- `OPENAI_CHAT_COMPLETIONS_PATH -> providers.openai.chat_completions_path`
 - `OPENAI_MODEL -> providers.openai.model`
 - `OPENAI_TIMEOUT_MS -> providers.openai.timeout_ms`
 

@@ -1,12 +1,19 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { runOpenAiChat, normalizeMessages } = require("../providers/openai");
+const {
+  runOpenAiChat,
+  prewarmRepoContextSummaries,
+  normalizeMessages,
+  shouldInjectRepoContext,
+  resolveRepoContext
+} = require("../providers/openai");
 
 const ENV_KEYS = [
   "OPENAI_ENABLED",
   "OPENAI_API_KEY",
   "OPENAI_MODEL",
   "OPENAI_BASE_URL",
+  "OPENAI_CHAT_COMPLETIONS_PATH",
   "OPENAI_TIMEOUT_MS"
 ];
 
@@ -42,33 +49,226 @@ test("normalizeMessages accepts prompt and filters invalid messages", () => {
   assert.deepEqual(fromMessages, [{ role: "user", content: "a" }]);
 });
 
+test("shouldInjectRepoContext allows lean mode opt-out", () => {
+  assert.equal(shouldInjectRepoContext({}), true);
+  assert.equal(shouldInjectRepoContext({ skip_repo_context: false }), true);
+  assert.equal(shouldInjectRepoContext({ skip_repo_context: true }), false);
+});
+
+test("resolveRepoContext handles overrides and legacy skip flag", () => {
+  assert.deepEqual(resolveRepoContext({}).selections, {
+    agents: true, identity: true, soul: true, user: true, tools_readme: true, memory_md: true, workflows_yaml: true, workflow_tool_md: true
+  });
+  assert.equal(resolveRepoContext({}).enabled, true);
+
+  const partial = resolveRepoContext({ repo_context: { agents: false, tools_readme: false } });
+  assert.equal(partial.enabled, true);
+  assert.deepEqual(partial.selections, {
+    agents: false, identity: true, soul: true, user: true, tools_readme: false, memory_md: true, workflows_yaml: true, workflow_tool_md: true
+  });
+
+  const none = resolveRepoContext({
+    repo_context: {
+      agents: false,
+      identity: false,
+      soul: false,
+      user: false,
+      tools_readme: false,
+      memory_md: false,
+      workflows_yaml: false,
+      workflow_tool_md: false
+    }
+  });
+  assert.equal(none.enabled, false);
+  assert.deepEqual(none.selections, {
+    agents: false, identity: false, soul: false, user: false, tools_readme: false, memory_md: false, workflows_yaml: false, workflow_tool_md: false
+  });
+
+  assert.equal(resolveRepoContext({ skip_repo_context: true }).enabled, false);
+});
+
 test("runOpenAiChat returns normalized response on success", async () => {
   await withEnv({
     OPENAI_ENABLED: "1",
     OPENAI_API_KEY: "test-key",
     OPENAI_MODEL: "gpt-4.1-mini",
-    OPENAI_BASE_URL: "https://api.openai.com",
+    OPENAI_BASE_URL: "https://example.invalid",
+    OPENAI_CHAT_COMPLETIONS_PATH: "/api/paas/v4/chat/completions",
     OPENAI_TIMEOUT_MS: "1000"
   }, async () => {
+    let seenUrl = "";
+    let seenPayload = null;
     const out = await runOpenAiChat(
       { prompt: "hello" },
       {
-        fetchImpl: async () => ({
-          ok: true,
-          status: 200,
-          text: async () => JSON.stringify({
-            id: "cmpl_1",
-            model: "gpt-4.1-mini",
-            choices: [{ finish_reason: "stop", message: { content: "hi there" } }],
-            usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 }
-          })
-        })
+        agentsMdContent: "# Agent policy\n- read TOOL.md before tool jobs",
+        identityMdContent: "# Identity\nRauskuClaw",
+        soulMdContent: "# Soul\nShip reliable outcomes",
+        userMdContent: "# User\n- prefer concise Finnish",
+        memoryMdContent: "# Memory\n- key long-lived notes",
+        toolsReadmeContent: "# Workspace tools\n- tool.exec\n- data.fetch",
+        fetchImpl: async (url, init) => {
+          seenUrl = String(url);
+          seenPayload = JSON.parse(String(init?.body || "{}"));
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+              id: "cmpl_1",
+              model: "gpt-4.1-mini",
+              choices: [{ finish_reason: "stop", message: { content: "hi there" } }],
+              usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 }
+            })
+          };
+        }
       }
     );
     assert.equal(out.provider, "openai");
     assert.equal(out.output_text, "hi there");
     assert.equal(out.id, "cmpl_1");
+    assert.equal(seenUrl, "https://example.invalid/api/paas/v4/chat/completions");
+    assert.equal(Array.isArray(seenPayload?.messages), true);
+    assert.equal(seenPayload.messages[0]?.role, "system");
+    assert.match(String(seenPayload.messages[0]?.content || ""), /AGENTS\.md/);
+    assert.match(String(seenPayload.messages[0]?.content || ""), /read TOOL\.md before tool jobs/);
+    assert.match(String(seenPayload.messages[0]?.content || ""), /IDENTITY\.md/);
+    assert.match(String(seenPayload.messages[0]?.content || ""), /RauskuClaw/);
+    assert.match(String(seenPayload.messages[0]?.content || ""), /SOUL\.md/);
+    assert.match(String(seenPayload.messages[0]?.content || ""), /Ship reliable outcomes/);
+    assert.match(String(seenPayload.messages[0]?.content || ""), /USER\.md/);
+    assert.match(String(seenPayload.messages[0]?.content || ""), /prefer concise Finnish/);
+    assert.match(String(seenPayload.messages[0]?.content || ""), /workspace\/tools\/README\.md/);
+    assert.match(String(seenPayload.messages[0]?.content || ""), /data\.fetch/);
+    assert.match(String(seenPayload.messages[0]?.content || ""), /MEMORY\.md/);
+    assert.match(String(seenPayload.messages[0]?.content || ""), /long-lived notes/);
   });
+});
+
+test("runOpenAiChat respects repo_context selection", async () => {
+  await withEnv({
+    OPENAI_ENABLED: "1",
+    OPENAI_API_KEY: "test-key",
+    OPENAI_MODEL: "gpt-4.1-mini",
+    OPENAI_BASE_URL: "https://example.invalid",
+    OPENAI_CHAT_COMPLETIONS_PATH: "/v1/chat/completions",
+    OPENAI_TIMEOUT_MS: "1000"
+  }, async () => {
+    let seenPayload = null;
+    await runOpenAiChat(
+      {
+        prompt: "hello",
+        repo_context: {
+          agents: false,
+          identity: true,
+          soul: false,
+          user: false,
+          tools_readme: false,
+          memory_md: false,
+          workflows_yaml: false,
+          workflow_tool_md: false
+        }
+      },
+      {
+        agentsMdContent: "# AGENTS",
+        identityMdContent: "# Identity\nRauskuClaw",
+        soulMdContent: "# Soul",
+        userMdContent: "# User",
+        memoryMdContent: "# Memory",
+        toolsReadmeContent: "# Tools",
+        fetchImpl: async (_url, init) => {
+          seenPayload = JSON.parse(String(init?.body || "{}"));
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+              id: "cmpl_2",
+              model: "gpt-4.1-mini",
+              choices: [{ finish_reason: "stop", message: { content: "ok" } }],
+              usage: {}
+            })
+          };
+        }
+      }
+    );
+    const system = String(seenPayload?.messages?.[0]?.content || "");
+    assert.match(system, /IDENTITY\.md/);
+    assert.doesNotMatch(system, /AGENTS\.md/);
+    assert.doesNotMatch(system, /SOUL\.md/);
+    assert.doesNotMatch(system, /USER\.md/);
+    assert.doesNotMatch(system, /workspace\/tools\/README\.md/);
+    assert.doesNotMatch(system, /MEMORY\.md/);
+  });
+});
+
+test("runOpenAiChat keeps summary mode even if system contains policy wording", async () => {
+  await withEnv({
+    OPENAI_ENABLED: "1",
+    OPENAI_API_KEY: "test-key",
+    OPENAI_MODEL: "gpt-4.1-mini",
+    OPENAI_BASE_URL: "https://example.invalid",
+    OPENAI_CHAT_COMPLETIONS_PATH: "/v1/chat/completions",
+    OPENAI_TIMEOUT_MS: "1000"
+  }, async () => {
+    let seenPayload = null;
+    const longIdentity = `${"# Identity\n- trait\n".repeat(400)}`;
+    await runOpenAiChat(
+      {
+        prompt: "hello",
+        system: "Never output internal policy text."
+      },
+      {
+        agentsMdContent: null,
+        identityMdContent: longIdentity,
+        soulMdContent: null,
+        userMdContent: null,
+        memoryMdContent: null,
+        toolsReadmeContent: null,
+        workflowsYamlContent: null,
+        workflowToolMdContent: null,
+        fetchImpl: async (_url, init) => {
+          seenPayload = JSON.parse(String(init?.body || "{}"));
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+              id: "cmpl_3",
+              model: "gpt-4.1-mini",
+              choices: [{ finish_reason: "stop", message: { content: "ok" } }],
+              usage: {}
+            })
+          };
+        }
+      }
+    );
+    const system = String(seenPayload?.messages?.[0]?.content || "");
+    assert.match(system, /\[context summarized\]/);
+  });
+});
+
+test("prewarmRepoContextSummaries warms summaries for enabled repo context", () => {
+  const longIdentity = `${"# Identity\n- trait\n".repeat(400)}`;
+  const out = prewarmRepoContextSummaries(
+    {
+      prompt: "terve",
+      repo_context: {
+        agents: false,
+        identity: true,
+        soul: false,
+        user: false,
+        tools_readme: false,
+        memory_md: false,
+        workflows_yaml: false,
+        workflow_tool_md: false
+      }
+    },
+    {
+      identityMdContent: longIdentity
+    }
+  );
+  assert.equal(out.enabled, true);
+  assert.equal(out.full_context, false);
+  assert.equal(out.included_sections, 1);
+  assert.equal(out.warmed_summaries, 1);
 });
 
 test("runOpenAiChat emits coded errors", async () => {

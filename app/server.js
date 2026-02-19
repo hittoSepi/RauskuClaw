@@ -6,11 +6,22 @@ const path = require("path");
 const { db } = require("./db");
 const { log } = require("./worker");
 const { getConfig, envOrConfig, envIntOrConfig, envBoolOrConfig } = require("./config");
+const { prewarmRepoContextSummaries } = require("./providers/openai");
+const { writeJobToWorkspaceIndex } = require("./jobs_workspace_index");
 const { getMemoryVectorSettings } = require("./memory/settings");
 const { embedText } = require("./memory/ollama_embed");
 const { searchMemoryVectors } = require("./memory/vector_store");
 const { rowToSchedule, validateCronExpression, nextCronRunFrom } = require("./scheduler");
 const { getObservabilitySettings, recordMetric, collectMetricCounters, getJobStatusSnapshot, buildRuntimeAlerts } = require("./metrics");
+const {
+  generateSessionId,
+  saveWorkingMemoryState,
+  loadWorkingMemoryState,
+  clearWorkingMemoryState,
+  listRecentWorkingMemorySessions,
+  buildWorkingMemoryContext,
+  getLatestWorkingMemorySession
+} = require("./memory/working_memory");
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -30,6 +41,22 @@ const apiKeyHeader = String(envOrConfig("API_KEY_HEADER", "api.auth.header", "x-
 const sseApiKeyParam = String(envOrConfig("SSE_API_KEY_PARAM", "api.sse.query_api_key_param", "api_key"));
 const memoryVectorSettings = getMemoryVectorSettings();
 const allowedAuthRoles = new Set(["admin", "read"]);
+const queueNamePattern = /^[a-z0-9._:-]{1,80}$/i;
+
+function normalizeQueueAllowlist(raw, idx) {
+  if (raw == null) return null;
+  const source = Array.isArray(raw) ? raw : String(raw).split(",");
+  const out = [];
+  for (const item of source) {
+    const queue = String(item || "").trim();
+    if (!queue) continue;
+    if (!queueNamePattern.test(queue)) {
+      throw new Error(`api.auth.keys[${idx}].queue_allowlist has invalid queue '${queue}'`);
+    }
+    if (!out.includes(queue)) out.push(queue);
+  }
+  return out.length > 0 ? out : null;
+}
 
 function normalizeAuthKeyEntry(raw, idx) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -45,7 +72,8 @@ function normalizeAuthKeyEntry(raw, idx) {
     name: String(raw.name || `key-${idx + 1}`).trim() || `key-${idx + 1}`,
     key,
     role,
-    sse: raw.sse == null ? true : Boolean(raw.sse)
+    sse: raw.sse == null ? true : Boolean(raw.sse),
+    queue_allowlist: normalizeQueueAllowlist(raw.queue_allowlist, idx)
   };
 }
 
@@ -67,7 +95,7 @@ function buildApiAuthKeys() {
   }
 
   if (source.length > 0) return source.map((entry, idx) => normalizeAuthKeyEntry(entry, idx));
-  if (apiKey) return [{ name: "legacy-api-key", key: apiKey, role: "admin", sse: true }];
+  if (apiKey) return [{ name: "legacy-api-key", key: apiKey, role: "admin", sse: true, queue_allowlist: null }];
   return [];
 }
 
@@ -120,7 +148,7 @@ function findPrincipalByKey(candidate) {
 
 function authenticate(req, { allowQuery = false } = {}) {
   if (apiAuthKeys.length < 1) {
-    if (apiAuthDisabled) return { ok: true, principal: { name: "auth-disabled", role: "admin", sse: true } };
+    if (apiAuthDisabled) return { ok: true, principal: { name: "auth-disabled", role: "admin", sse: true, queue_allowlist: null } };
     return { ok: false, reason: "misconfigured" };
   }
 
@@ -147,7 +175,12 @@ function auth(req, res, next) {
     if (out.reason === "misconfigured") return authMisconfigured(res);
     return res.status(401).json({ ok: false, error: { code: "UNAUTHORIZED", message: "Unauthorized" } });
   }
-  req.auth = { name: out.principal.name, role: out.principal.role };
+  req.auth = {
+    name: out.principal.name,
+    role: out.principal.role,
+    sse: Boolean(out.principal.sse),
+    queue_allowlist: Array.isArray(out.principal.queue_allowlist) ? out.principal.queue_allowlist.slice() : null
+  };
   if (isWriteMethod(req.method) && out.principal.role !== "admin") {
     return res.status(403).json({
       ok: false,
@@ -163,7 +196,12 @@ function authSse(req, res, next) {
     if (out.reason === "misconfigured") return authMisconfigured(res);
     return res.status(401).json({ ok: false, error: { code: "UNAUTHORIZED", message: "Unauthorized" } });
   }
-  req.auth = { name: out.principal.name, role: out.principal.role };
+  req.auth = {
+    name: out.principal.name,
+    role: out.principal.role,
+    sse: Boolean(out.principal.sse),
+    queue_allowlist: Array.isArray(out.principal.queue_allowlist) ? out.principal.queue_allowlist.slice() : null
+  };
   if (!out.principal.sse) {
     return res.status(403).json({
       ok: false,
@@ -196,6 +234,280 @@ function parseOptionalInt(value, { min, max, field }) {
     throw new Error(`'${field}' must be integer ${min}..${max}`);
   }
   return value;
+}
+
+function splitCsvList(value) {
+  return String(value || "")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+function splitCsvListOrArray(value) {
+  if (Array.isArray(value)) {
+    return value.map((x) => String(x || "").trim()).filter(Boolean);
+  }
+  return splitCsvList(value);
+}
+
+function normalizeRuntimeToolsPrefs(raw) {
+  const src = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const toolExec = src.tool_exec && typeof src.tool_exec === "object" ? src.tool_exec : {};
+  const dataFetch = src.data_fetch && typeof src.data_fetch === "object" ? src.data_fetch : {};
+  const webSearch = src.web_search && typeof src.web_search === "object" ? src.web_search : {};
+
+  const out = {
+    tool_exec: {},
+    data_fetch: {},
+    web_search: {}
+  };
+
+  if (typeof toolExec.enabled === "boolean") out.tool_exec.enabled = toolExec.enabled;
+  if (toolExec.allowlist != null) out.tool_exec.allowlist = splitCsvListOrArray(toolExec.allowlist);
+  if (Number.isInteger(Number(toolExec.timeout_ms))) out.tool_exec.timeout_ms = Number(toolExec.timeout_ms);
+
+  if (typeof dataFetch.enabled === "boolean") out.data_fetch.enabled = dataFetch.enabled;
+  if (dataFetch.allowlist != null) out.data_fetch.allowlist = splitCsvListOrArray(dataFetch.allowlist);
+  if (Number.isInteger(Number(dataFetch.timeout_ms))) out.data_fetch.timeout_ms = Number(dataFetch.timeout_ms);
+  if (Number.isInteger(Number(dataFetch.max_bytes))) out.data_fetch.max_bytes = Number(dataFetch.max_bytes);
+
+  if (typeof webSearch.enabled === "boolean") out.web_search.enabled = webSearch.enabled;
+  if (typeof webSearch.provider === "string") out.web_search.provider = String(webSearch.provider || "").trim().toLowerCase();
+  if (Number.isInteger(Number(webSearch.timeout_ms))) out.web_search.timeout_ms = Number(webSearch.timeout_ms);
+  if (Number.isInteger(Number(webSearch.max_results))) out.web_search.max_results = Number(webSearch.max_results);
+  if (typeof webSearch.base_url === "string") out.web_search.base_url = String(webSearch.base_url || "").trim();
+  if (typeof webSearch.brave_api_key === "string") out.web_search.brave_api_key = String(webSearch.brave_api_key || "").trim();
+  if (typeof webSearch.brave_endpoint === "string") out.web_search.brave_endpoint = String(webSearch.brave_endpoint || "").trim();
+
+  return out;
+}
+
+function readRuntimeToolsPrefs() {
+  const row = db.prepare(`SELECT value_json FROM ui_prefs WHERE scope = ?`).get("runtime_tools");
+  const parsed = row?.value_json ? safeJsonParse(row.value_json) : null;
+  return normalizeRuntimeToolsPrefs(parsed || {});
+}
+
+function ensureInputObjectForHandler(inputObj, handlerName) {
+  if (!inputObj || typeof inputObj !== "object" || Array.isArray(inputObj)) {
+    throw new Error(`${handlerName} requires 'input' object`);
+  }
+  return inputObj;
+}
+
+function validateJobInputByHandler(handler, inputObj) {
+  const handlerName = String(handler || "");
+  const genericInput = inputObj && typeof inputObj === "object" && !Array.isArray(inputObj) ? inputObj : null;
+  if (genericInput && genericInput.depends_on != null) {
+    if (!Array.isArray(genericInput.depends_on)) {
+      throw new Error("input.depends_on must be an array of job id strings");
+    }
+    if (genericInput.depends_on.length > 50) {
+      throw new Error("input.depends_on supports at most 50 dependency ids");
+    }
+    for (const dep of genericInput.depends_on) {
+      const id = String(dep || "").trim();
+      if (!id) throw new Error("input.depends_on entries must be non-empty strings");
+      if (id.length > 120) throw new Error("input.depends_on entries must be at most 120 characters");
+    }
+  }
+
+  if (handlerName === "builtin:tool.exec") {
+    const input = ensureInputObjectForHandler(inputObj, "tool.exec");
+    const command = String(input.command || input.cmd || input.script || "").trim();
+    if (!command) throw new Error("tool.exec requires input.command");
+    if (command.length > 4000) throw new Error("tool.exec input.command must be at most 4000 characters");
+    if (input.args != null) {
+      if (!Array.isArray(input.args)) throw new Error("tool.exec input.args must be an array of strings");
+      if (input.args.length > 100) throw new Error("tool.exec input.args supports at most 100 entries");
+      for (const arg of input.args) {
+        if (typeof arg !== "string") throw new Error("tool.exec input.args must be an array of strings");
+        if (arg.length > 4000) throw new Error("tool.exec args entries must be at most 4000 characters");
+      }
+    }
+    if (input.timeout_ms != null) {
+      parseOptionalInt(input.timeout_ms, { min: 100, max: 120000, field: "input.timeout_ms" });
+    }
+    return;
+  }
+
+  if (handlerName === "builtin:data.fetch") {
+    const input = ensureInputObjectForHandler(inputObj, "data.fetch");
+    const urlRaw = String(input.url || "").trim();
+    if (!urlRaw) throw new Error("data.fetch requires input.url");
+    let parsed;
+    try {
+      parsed = new URL(urlRaw);
+    } catch {
+      throw new Error("data.fetch input.url must be valid absolute URL");
+    }
+    if (parsed.protocol !== "https:") {
+      throw new Error("data.fetch input.url must use https://");
+    }
+    if (input.timeout_ms != null) {
+      parseOptionalInt(input.timeout_ms, { min: 200, max: 120000, field: "input.timeout_ms" });
+    }
+    if (input.max_bytes != null) {
+      parseOptionalInt(input.max_bytes, { min: 512, max: 1024 * 1024, field: "input.max_bytes" });
+    }
+    return;
+  }
+
+  if (handlerName === "builtin:data.file_read") {
+    const input = ensureInputObjectForHandler(inputObj, "data.file_read");
+    const filePath = String(input.path || input.file_path || "").trim();
+    if (!filePath) throw new Error("data.file_read requires input.path");
+    if (filePath.length > 2000) throw new Error("data.file_read input.path must be at most 2000 characters");
+    if (input.max_bytes != null) {
+      parseOptionalInt(input.max_bytes, { min: 512, max: 1024 * 1024, field: "input.max_bytes" });
+    }
+    return;
+  }
+
+  if (handlerName === "builtin:data.write_file") {
+    const input = ensureInputObjectForHandler(inputObj, "data.write_file");
+    const filePath = String(input.path || input.file_path || "").trim();
+    if (!filePath) throw new Error("data.write_file requires input.path");
+    if (filePath.length > 2000) throw new Error("data.write_file input.path must be at most 2000 characters");
+    const mode = String(input.mode || "replace").trim().toLowerCase();
+    if (!["replace", "append", "prepend", "insert_at", "replace_range"].includes(mode)) {
+      throw new Error("data.write_file input.mode must be one of: replace, append, prepend, insert_at, replace_range");
+    }
+    const hasContent = input.content != null;
+    const hasContentBase64 = input.content_base64 != null;
+    if (hasContent && hasContentBase64) {
+      throw new Error("data.write_file input.content and input.content_base64 are mutually exclusive");
+    }
+    if (hasContent) {
+      const content = String(input.content || "");
+      if (Buffer.byteLength(content, "utf8") > 10 * 1024 * 1024) {
+        throw new Error("data.write_file input.content must be at most 10485760 bytes");
+      }
+    }
+    if (hasContentBase64) {
+      const b64 = String(input.content_base64 || "").trim();
+      if (!/^[A-Za-z0-9+/=\s]+$/.test(b64)) {
+        throw new Error("data.write_file input.content_base64 must be base64 text");
+      }
+      if (Buffer.byteLength(b64, "utf8") > 14 * 1024 * 1024) {
+        throw new Error("data.write_file input.content_base64 must be at most 14680064 bytes");
+      }
+    }
+    if (mode === "insert_at") {
+      parseOptionalInt(input.offset, { min: 0, max: 10 * 1024 * 1024, field: "input.offset" });
+    }
+    if (mode === "replace_range") {
+      parseOptionalInt(input.start, { min: 0, max: 10 * 1024 * 1024, field: "input.start" });
+      parseOptionalInt(input.end, { min: 0, max: 10 * 1024 * 1024, field: "input.end" });
+    }
+    if ((mode === "insert_at" || mode === "replace_range") && input.create_if_missing === true) {
+      throw new Error(`data.write_file input.create_if_missing is not allowed with mode '${mode}' (targeted modes require existing file)`);
+    }
+    if (input.max_bytes != null) {
+      parseOptionalInt(input.max_bytes, { min: 512, max: 10 * 1024 * 1024, field: "input.max_bytes" });
+    }
+    if (input.dry_run != null && typeof input.dry_run !== "boolean") throw new Error("data.write_file input.dry_run must be boolean");
+    if (input.create_if_missing != null && typeof input.create_if_missing !== "boolean") throw new Error("data.write_file input.create_if_missing must be boolean");
+    if (input.mkdir_p != null && typeof input.mkdir_p !== "boolean") throw new Error("data.write_file input.mkdir_p must be boolean");
+    if (input.expected_sha256 != null) {
+      const v = String(input.expected_sha256 || "").trim().toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(v)) throw new Error("data.write_file input.expected_sha256 must be 64 hex chars");
+    }
+    return;
+  }
+
+  if (handlerName === "builtin:tools.file_search") {
+    const input = ensureInputObjectForHandler(inputObj, "tools.file_search");
+    const query = String(input.query || input.q || input.name || "").trim();
+    if (!query) throw new Error("tools.file_search requires input.query");
+    if (query.length > 240) throw new Error("tools.file_search input.query must be at most 240 characters");
+    const dirPath = String(input.path || input.base_path || ".").trim();
+    if (dirPath.length > 2000) throw new Error("tools.file_search input.path must be at most 2000 characters");
+    if (input.max_results != null) {
+      parseOptionalInt(input.max_results, { min: 1, max: 200, field: "input.max_results" });
+    }
+    return;
+  }
+
+  if (handlerName === "builtin:tools.find_in_files") {
+    const input = ensureInputObjectForHandler(inputObj, "tools.find_in_files");
+    const query = String(input.query || input.q || input.pattern || "").trim();
+    if (!query) throw new Error("tools.find_in_files requires input.query");
+    if (query.length > 500) throw new Error("tools.find_in_files input.query must be at most 500 characters");
+
+    const dirPath = String(input.path || input.base_path || ".").trim();
+    if (dirPath.length > 2000) throw new Error("tools.find_in_files input.path must be at most 2000 characters");
+
+    if (input.files != null) {
+      if (!Array.isArray(input.files)) throw new Error("tools.find_in_files input.files must be an array of paths");
+      if (input.files.length > 500) throw new Error("tools.find_in_files input.files supports at most 500 entries");
+      for (const item of input.files) {
+        const fp = String(item || "").trim();
+        if (!fp) throw new Error("tools.find_in_files input.files entries must be non-empty paths");
+        if (fp.length > 2000) throw new Error("tools.find_in_files input.files entries must be at most 2000 characters");
+      }
+    }
+
+    if (input.max_results != null) {
+      parseOptionalInt(input.max_results, { min: 1, max: 500, field: "input.max_results" });
+    }
+    if (input.max_bytes_per_file != null) {
+      parseOptionalInt(input.max_bytes_per_file, { min: 512, max: 2 * 1024 * 1024, field: "input.max_bytes_per_file" });
+    }
+    if (input.max_scanned != null) {
+      parseOptionalInt(input.max_scanned, { min: 100, max: 50000, field: "input.max_scanned" });
+    }
+    if (input.regex != null && typeof input.regex !== "boolean") throw new Error("tools.find_in_files input.regex must be boolean");
+    if (input.case_sensitive != null && typeof input.case_sensitive !== "boolean") throw new Error("tools.find_in_files input.case_sensitive must be boolean");
+    if (input.include_hidden != null && typeof input.include_hidden !== "boolean") throw new Error("tools.find_in_files input.include_hidden must be boolean");
+    return;
+  }
+
+  if (handlerName === "builtin:tools.web_search") {
+    const input = ensureInputObjectForHandler(inputObj, "tools.web_search");
+    const query = String(input.query || input.q || "").trim();
+    if (!query) throw new Error("tools.web_search requires input.query");
+    if (query.length > 500) throw new Error("tools.web_search input.query must be at most 500 characters");
+    if (input.provider != null) {
+      const provider = String(input.provider || "").trim().toLowerCase();
+      if (!provider || (provider !== "duckduckgo" && provider !== "brave")) {
+        throw new Error("tools.web_search input.provider must be one of: duckduckgo, brave");
+      }
+    }
+    if (input.max_results != null) {
+      parseOptionalInt(input.max_results, { min: 1, max: 20, field: "input.max_results" });
+    }
+    if (input.timeout_ms != null) {
+      parseOptionalInt(input.timeout_ms, { min: 200, max: 120000, field: "input.timeout_ms" });
+    }
+  }
+
+  if (handlerName === "builtin:workflow.run") {
+    const input = ensureInputObjectForHandler(inputObj, "workflow.run");
+    const workflow = String(input.workflow || input.name || "").trim();
+    if (!workflow) throw new Error("workflow.run requires input.workflow");
+    if (workflow.length > 240) throw new Error("workflow.run input.workflow must be at most 240 characters");
+    if (input.workflow_file != null) {
+      const workflowFile = String(input.workflow_file || "").trim();
+      if (!workflowFile) throw new Error("workflow.run input.workflow_file must be non-empty when provided");
+      if (workflowFile.length > 240) throw new Error("workflow.run input.workflow_file must be at most 240 characters");
+    }
+    if (input.params != null) {
+      if (!input.params || typeof input.params !== "object" || Array.isArray(input.params)) {
+        throw new Error("workflow.run input.params must be an object");
+      }
+    }
+    if (input.vars != null) {
+      if (!input.vars || typeof input.vars !== "object" || Array.isArray(input.vars)) {
+        throw new Error("workflow.run input.vars must be an object");
+      }
+    }
+    if (input.queue != null) {
+      const queueName = String(input.queue || "").trim();
+      if (!queueNamePattern.test(queueName)) throw new Error("workflow.run input.queue has invalid queue name");
+    }
+    return;
+  }
 }
 
 function parseUiPrefsScope(raw) {
@@ -319,6 +631,33 @@ function nowPlusSeconds(sec) {
   return new Date(Date.now() + (sec * 1000)).toISOString();
 }
 
+function authQueueAllowlist(authInfo) {
+  const raw = authInfo?.queue_allowlist;
+  if (!Array.isArray(raw)) return null;
+  const out = raw.map((x) => String(x || "").trim()).filter(Boolean);
+  return out.length > 0 ? out : null;
+}
+
+function isQueueAllowedForAuth(authInfo, queueName) {
+  const allowlist = authQueueAllowlist(authInfo);
+  if (!allowlist) return true;
+  return allowlist.includes(String(queueName || "default").trim() || "default");
+}
+
+function getAuthorizedJobRow(jobId, authInfo) {
+  const row = db.prepare(`SELECT * FROM jobs WHERE id = ?`).get(jobId);
+  if (!row) return null;
+  if (!isQueueAllowedForAuth(authInfo, row.queue || "default")) return null;
+  return row;
+}
+
+function getAuthorizedScheduleRow(scheduleId, authInfo) {
+  const row = db.prepare(`SELECT * FROM job_schedules WHERE id = ?`).get(scheduleId);
+  if (!row) return null;
+  if (!isQueueAllowedForAuth(authInfo, row.queue || "default")) return null;
+  return row;
+}
+
 function rowToMemory(row) {
   if (!row) return null;
   return {
@@ -374,11 +713,197 @@ function enqueueInternalJob(type, input, opts = {}) {
   return id;
 }
 
+function apiError(status, code, message, details) {
+  const err = new Error(String(message || "Request failed"));
+  err.httpStatus = Number(status) || 400;
+  err.errorCode = String(code || "VALIDATION_ERROR");
+  if (details && typeof details === "object") err.errorDetails = details;
+  return err;
+}
+
+function parseJobCreatePayload(body) {
+  const { type, queue, input, priority, timeout_sec, max_attempts, callback_url, tags } = body ?? {};
+  if (!type || typeof type !== "string") throw apiError(400, "VALIDATION_ERROR", "Missing/invalid 'type'");
+
+  const typeRow = db.prepare(`
+    SELECT name, enabled, handler, default_timeout_sec, default_max_attempts
+    FROM job_types
+    WHERE name = ?
+  `).get(type);
+
+  if (!typeRow || !typeRow.enabled) {
+    throw apiError(400, "VALIDATION_ERROR", "Unknown or disabled 'type'");
+  }
+
+  let pr = 5;
+  if (priority != null) {
+    if (!Number.isInteger(priority) || priority < 0 || priority > 10) {
+      throw apiError(400, "VALIDATION_ERROR", "'priority' must be integer 0..10");
+    }
+    pr = priority;
+  }
+
+  let to = typeRow.default_timeout_sec;
+  if (timeout_sec != null) {
+    if (!Number.isInteger(timeout_sec) || timeout_sec < 1 || timeout_sec > 3600) {
+      throw apiError(400, "VALIDATION_ERROR", "'timeout_sec' must be integer 1..3600");
+    }
+    to = timeout_sec;
+  }
+
+  let ma = typeRow.default_max_attempts;
+  if (max_attempts != null) {
+    if (!Number.isInteger(max_attempts) || max_attempts < 1 || max_attempts > 10) {
+      throw apiError(400, "VALIDATION_ERROR", "'max_attempts' must be integer 1..10");
+    }
+    ma = max_attempts;
+  }
+
+  const tagsArr = Array.isArray(tags) ? tags.slice(0, 20).map(String) : [];
+  const inputObj = input ?? null;
+  try {
+    validateJobInputByHandler(typeRow.handler, inputObj);
+  } catch (e) {
+    throw apiError(400, "VALIDATION_ERROR", String(e?.message || e));
+  }
+  const queueName = normalizeQueueName(queue) || "default";
+  if (!queueNamePattern.test(queueName)) {
+    throw apiError(400, "VALIDATION_ERROR", "'queue' must match ^[a-z0-9._:-]{1,80}$");
+  }
+
+  return {
+    type: String(type),
+    typeRow,
+    queueName,
+    inputObj,
+    pr,
+    to,
+    ma,
+    callback_url: callback_url ? String(callback_url) : null,
+    tagsArr
+  };
+}
+
+function createJobFromPayload(body, { authInfo = null, idempotencyKey = "" } = {}) {
+  const parsed = parseJobCreatePayload(body);
+  const allowedQueues = Array.isArray(authInfo?.queue_allowlist) ? authInfo.queue_allowlist : null;
+  if (allowedQueues && !allowedQueues.includes(parsed.queueName)) {
+    throw apiError(
+      403,
+      "FORBIDDEN",
+      `Queue '${parsed.queueName}' is not allowed for this API key.`,
+      { allowed_queues: allowedQueues }
+    );
+  }
+
+  const idemKey = String(idempotencyKey || "").trim();
+  const requestFingerprint = stableHash({
+    type: parsed.type,
+    queue: parsed.queueName,
+    input: parsed.inputObj,
+    priority: parsed.pr,
+    timeout_sec: parsed.to,
+    max_attempts: parsed.ma,
+    callback_url: parsed.callback_url ?? null,
+    tags: parsed.tagsArr
+  });
+
+  if (idemKey) {
+    const found = db.prepare(`SELECT * FROM idempotency_keys WHERE key = ?`).get(idemKey);
+    if (found) {
+      if (found.request_hash !== requestFingerprint) {
+        throw apiError(409, "IDEMPOTENCY_CONFLICT", "Idempotency-Key reused with different request");
+      }
+      const existing = db.prepare(`SELECT * FROM jobs WHERE id = ?`).get(found.job_id);
+      if (existing) {
+        recordMetricSafe("job.idempotency_hit", { source: "api", labels: { type: parsed.type } });
+        return { row: existing, idempotent: true };
+      }
+    }
+  }
+
+  const id = crypto.randomUUID();
+  const now = nowIso();
+  const tx = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO jobs (id, type, queue, status, priority, timeout_sec, max_attempts, attempts, callback_url, tags_json, input_json, created_at, updated_at)
+      VALUES (?, ?, ?, 'queued', ?, ?, ?, 0, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      parsed.type,
+      parsed.queueName,
+      parsed.pr,
+      parsed.to,
+      parsed.ma,
+      parsed.callback_url,
+      JSON.stringify(parsed.tagsArr),
+      JSON.stringify(parsed.inputObj),
+      now,
+      now
+    );
+
+    if (idemKey) {
+      db.prepare(`
+        INSERT INTO idempotency_keys (key, request_hash, job_id, created_at)
+        VALUES (?, ?, ?, ?)
+      `).run(idemKey, requestFingerprint, id, now);
+    }
+
+    log(id, "info", "Job created", {
+      type: parsed.type,
+      queue: parsed.queueName,
+      priority: parsed.pr,
+      timeout_sec: parsed.to,
+      max_attempts: parsed.ma,
+      handler: parsed.typeRow.handler
+    });
+    recordMetricSafe("job.created", { source: "api", labels: { type: parsed.type, queue: parsed.queueName } });
+  });
+
+  tx();
+  const row = db.prepare(`SELECT * FROM jobs WHERE id = ?`).get(id);
+  try {
+    if (row) writeJobToWorkspaceIndex(workspaceRoot, row, { event: "created" });
+  } catch {}
+  return { row, idempotent: false };
+}
+
+function deriveFileSearchQueryForManager(userText) {
+  const s = String(userText || "").trim();
+  if (!s) return "README";
+  const directPath = s.match(/([A-Za-z0-9._/-]+\.[A-Za-z0-9]{1,10})/);
+  if (directPath?.[1]) return String(directPath[1]).trim();
+  if (/readme/i.test(s)) return /readme\.md/i.test(s) ? "README.md" : "README";
+  const words = s.split(/\s+/).map((w) => w.replace(/[^A-Za-z0-9._-]/g, "")).filter(Boolean);
+  return words.find((w) => w.length >= 3 && w.length <= 80) || "README";
+}
+
+function toolDocPathForType(typeName) {
+  const type = String(typeName || "").trim();
+  if (!type) return "";
+  if (!/^(tool|tools|data)\./.test(type)) return "";
+  return `tools/${type}/TOOL.md`;
+}
+
 app.get("/health", (req, res) => {
   res.json({ ok: true, service: "rauskuclaw-api", time: nowIso() });
 });
 
 app.get("/v1/ping", auth, (req, res) => res.json({ ok: true, pong: true }));
+
+app.get("/v1/auth/whoami", auth, (req, res) => {
+  const role = String(req.auth?.role || "read");
+  return res.json({
+    ok: true,
+    auth: {
+      name: String(req.auth?.name || ""),
+      role,
+      sse: req.auth?.sse === true,
+      can_write: role === "admin",
+      queue_allowlist: Array.isArray(req.auth?.queue_allowlist) ? req.auth.queue_allowlist : null
+    }
+  });
+});
 
 app.get("/v1/runtime/providers", auth, (req, res) => {
   const codexEnabled = envBoolOrConfig("CODEX_OSS_ENABLED", "providers.codex_oss.enabled", false);
@@ -391,7 +916,20 @@ app.get("/v1/runtime/providers", auth, (req, res) => {
   const openAiEnabled = envBoolOrConfig("OPENAI_ENABLED", "providers.openai.enabled", false);
   const openAiModel = String(envOrConfig("OPENAI_MODEL", "providers.openai.model", "gpt-4.1-mini")).trim();
   const openAiBaseUrl = String(envOrConfig("OPENAI_BASE_URL", "providers.openai.base_url", "https://api.openai.com")).trim();
+  const openAiChatCompletionsPath = String(
+    envOrConfig("OPENAI_CHAT_COMPLETIONS_PATH", "providers.openai.chat_completions_path", "/v1/chat/completions")
+  ).trim();
   const openAiTimeoutMs = envIntOrConfig("OPENAI_TIMEOUT_MS", "providers.openai.timeout_ms", 30000);
+
+  if (String(req.auth?.role || "") === "read") {
+    return res.json({
+      ok: true,
+      providers: {
+        codex: { enabled: codexEnabled },
+        openai: { enabled: openAiEnabled }
+      }
+    });
+  }
 
   res.json({
     ok: true,
@@ -408,10 +946,149 @@ app.get("/v1/runtime/providers", auth, (req, res) => {
         enabled: openAiEnabled,
         model: openAiModel || null,
         base_url: openAiBaseUrl,
+        chat_completions_path: openAiChatCompletionsPath || "/v1/chat/completions",
         timeout_ms: openAiTimeoutMs
       }
     }
   });
+});
+
+app.get("/v1/runtime/handlers", auth, (req, res) => {
+  const runtimeTools = readRuntimeToolsPrefs();
+  const deployAllowlistEnvName = String(getConfig("handlers.deploy.allowlist_env", "DEPLOY_TARGET_ALLOWLIST"));
+  const deployFallbackTargets = getConfig("handlers.deploy.default_allowed_targets", ["staging"]);
+  const deployFallbackCsv = Array.isArray(deployFallbackTargets) ? deployFallbackTargets.join(",") : "staging";
+  const deployTargets = splitCsvList(process.env[deployAllowlistEnvName] || deployFallbackCsv);
+
+  const toolExecEnabledEnvName = String(getConfig("handlers.exec.enabled_env", "TOOL_EXEC_ENABLED"));
+  const toolExecAllowlistEnvName = String(getConfig("handlers.exec.allowlist_env", "TOOL_EXEC_ALLOWLIST"));
+  const toolExecTimeoutEnvName = String(getConfig("handlers.exec.timeout_env", "TOOL_EXEC_TIMEOUT_MS"));
+  const toolExecEnabled = envBoolOrConfig(toolExecEnabledEnvName, "handlers.exec.enabled", false);
+  const toolExecAllowlist = splitCsvList(process.env[toolExecAllowlistEnvName] || "");
+  const toolExecTimeoutMs = envIntOrConfig(toolExecTimeoutEnvName, "handlers.exec.default_timeout_ms", 10000);
+  const toolExecEffectiveEnabled = typeof runtimeTools.tool_exec.enabled === "boolean" ? runtimeTools.tool_exec.enabled : toolExecEnabled;
+  const toolExecEffectiveAllowlist = Array.isArray(runtimeTools.tool_exec.allowlist) && runtimeTools.tool_exec.allowlist.length > 0
+    ? runtimeTools.tool_exec.allowlist
+    : toolExecAllowlist;
+  const toolExecEffectiveTimeoutMs = Number.isInteger(runtimeTools.tool_exec.timeout_ms)
+    ? runtimeTools.tool_exec.timeout_ms
+    : toolExecTimeoutMs;
+
+  const dataFetchEnabledEnvName = String(getConfig("handlers.data_fetch.enabled_env", "DATA_FETCH_ENABLED"));
+  const dataFetchAllowlistEnvName = String(getConfig("handlers.data_fetch.allowlist_env", "DATA_FETCH_ALLOWLIST"));
+  const dataFetchTimeoutEnvName = String(getConfig("handlers.data_fetch.timeout_env", "DATA_FETCH_TIMEOUT_MS"));
+  const dataFetchMaxBytesEnvName = String(getConfig("handlers.data_fetch.max_bytes_env", "DATA_FETCH_MAX_BYTES"));
+  const dataFetchEnabled = envBoolOrConfig(dataFetchEnabledEnvName, "handlers.data_fetch.enabled", false);
+  const dataFetchAllowlist = splitCsvList(process.env[dataFetchAllowlistEnvName] || "");
+  const dataFetchTimeoutMs = envIntOrConfig(dataFetchTimeoutEnvName, "handlers.data_fetch.default_timeout_ms", 8000);
+  const dataFetchMaxBytes = envIntOrConfig(dataFetchMaxBytesEnvName, "handlers.data_fetch.default_max_bytes", 65536);
+  const dataFetchEffectiveEnabled = typeof runtimeTools.data_fetch.enabled === "boolean" ? runtimeTools.data_fetch.enabled : dataFetchEnabled;
+  const dataFetchEffectiveAllowlist = Array.isArray(runtimeTools.data_fetch.allowlist) && runtimeTools.data_fetch.allowlist.length > 0
+    ? runtimeTools.data_fetch.allowlist
+    : dataFetchAllowlist;
+  const dataFetchEffectiveTimeoutMs = Number.isInteger(runtimeTools.data_fetch.timeout_ms)
+    ? runtimeTools.data_fetch.timeout_ms
+    : dataFetchTimeoutMs;
+  const dataFetchEffectiveMaxBytes = Number.isInteger(runtimeTools.data_fetch.max_bytes)
+    ? runtimeTools.data_fetch.max_bytes
+    : dataFetchMaxBytes;
+
+  const webSearchEnabledEnvName = String(getConfig("handlers.web_search.enabled_env", "WEB_SEARCH_ENABLED"));
+  const webSearchProviderEnvName = String(getConfig("handlers.web_search.provider_env", "WEB_SEARCH_PROVIDER"));
+  const webSearchTimeoutEnvName = String(getConfig("handlers.web_search.timeout_env", "WEB_SEARCH_TIMEOUT_MS"));
+  const webSearchMaxResultsEnvName = String(getConfig("handlers.web_search.max_results_env", "WEB_SEARCH_MAX_RESULTS"));
+  const webSearchBaseUrlEnvName = String(getConfig("handlers.web_search.base_url_env", "WEB_SEARCH_BASE_URL"));
+  const webSearchBraveApiKeyEnvName = String(getConfig("handlers.web_search.brave_api_key_env", "WEB_SEARCH_BRAVE_API_KEY"));
+  const webSearchEnabled = envBoolOrConfig(webSearchEnabledEnvName, "handlers.web_search.enabled", false);
+  const webSearchProvider = String(envOrConfig(webSearchProviderEnvName, "handlers.web_search.default_provider", "duckduckgo")).trim().toLowerCase() || "duckduckgo";
+  const webSearchTimeoutMs = envIntOrConfig(webSearchTimeoutEnvName, "handlers.web_search.default_timeout_ms", 8000);
+  const webSearchMaxResults = envIntOrConfig(webSearchMaxResultsEnvName, "handlers.web_search.default_max_results", 5);
+  const webSearchBaseUrl = String(envOrConfig(webSearchBaseUrlEnvName, "handlers.web_search.default_base_url", "https://api.duckduckgo.com"));
+  const webSearchBraveApiKey = String(process.env[webSearchBraveApiKeyEnvName] || "").trim();
+  const webSearchEffectiveEnabled = typeof runtimeTools.web_search.enabled === "boolean" ? runtimeTools.web_search.enabled : webSearchEnabled;
+  const webSearchProviderOverride = String(runtimeTools.web_search.provider || "").trim().toLowerCase();
+  const webSearchEffectiveProvider = (webSearchProviderOverride === "duckduckgo" || webSearchProviderOverride === "brave")
+    ? webSearchProviderOverride
+    : webSearchProvider;
+  const webSearchEffectiveTimeoutMs = Number.isInteger(runtimeTools.web_search.timeout_ms)
+    ? runtimeTools.web_search.timeout_ms
+    : webSearchTimeoutMs;
+  const webSearchEffectiveMaxResults = Number.isInteger(runtimeTools.web_search.max_results)
+    ? runtimeTools.web_search.max_results
+    : webSearchMaxResults;
+  const webSearchEffectiveBaseUrl = String(runtimeTools.web_search.base_url || webSearchBaseUrl || "").trim() || "https://api.duckduckgo.com";
+  const webSearchEffectiveBraveApiKey = Object.prototype.hasOwnProperty.call(runtimeTools.web_search, "brave_api_key")
+    ? String(runtimeTools.web_search.brave_api_key || "").trim()
+    : webSearchBraveApiKey;
+  const webSearchEffectiveBraveConfigured = webSearchEffectiveBraveApiKey.length > 0;
+
+  if (String(req.auth?.role || "") === "read") {
+    return res.json({
+      ok: true,
+      handlers: {
+        deploy: { enabled: deployTargets.length > 0 },
+        tool_exec: { enabled: toolExecEffectiveEnabled },
+        data_fetch: { enabled: dataFetchEffectiveEnabled },
+        web_search: { enabled: webSearchEffectiveEnabled, provider: webSearchEffectiveProvider }
+      }
+    });
+  }
+
+  return res.json({
+    ok: true,
+    handlers: {
+      deploy: {
+        enabled: deployTargets.length > 0,
+        allowed_targets: deployTargets
+      },
+      tool_exec: {
+        enabled: toolExecEffectiveEnabled,
+        allowlist_count: toolExecEffectiveAllowlist.length,
+        allowlist: toolExecEffectiveAllowlist,
+        timeout_ms: toolExecEffectiveTimeoutMs
+      },
+      data_fetch: {
+        enabled: dataFetchEffectiveEnabled,
+        allowlist_count: dataFetchEffectiveAllowlist.length,
+        allowlist: dataFetchEffectiveAllowlist,
+        timeout_ms: dataFetchEffectiveTimeoutMs,
+        max_bytes: dataFetchEffectiveMaxBytes
+      },
+      web_search: {
+        enabled: webSearchEffectiveEnabled,
+        provider: webSearchEffectiveProvider,
+        brave_api_key_configured: webSearchEffectiveBraveConfigured,
+        timeout_ms: webSearchEffectiveTimeoutMs,
+        max_results: webSearchEffectiveMaxResults,
+        base_url: webSearchEffectiveBaseUrl
+      }
+    }
+  });
+});
+
+app.post("/v1/runtime/repo-context/prewarm", auth, (req, res) => {
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const type = String(body.type || "").trim();
+  const input = body.input && typeof body.input === "object" ? body.input : {};
+  if (type && type !== "ai.chat.generate") {
+    return res.json({
+      ok: true,
+      skipped: true,
+      reason: `type '${type}' is not supported for repo-context prewarm`
+    });
+  }
+  try {
+    const out = prewarmRepoContextSummaries(input);
+    return res.json({ ok: true, type: "ai.chat.generate", ...out });
+  } catch (e) {
+    return res.status(500).json({
+      ok: false,
+      error: {
+        code: "PREWARM_FAILED",
+        message: String(e?.message || e)
+      }
+    });
+  }
 });
 
 app.get("/v1/ui-prefs", auth, (req, res) => {
@@ -470,9 +1147,25 @@ app.put("/v1/ui-prefs", auth, (req, res) => {
 app.get("/v1/runtime/metrics", auth, (req, res) => {
   const settings = getObservabilitySettings();
   const windowSec = Math.max(60, Math.min(7 * 24 * 3600, parseInt(String(req.query.window_sec || settings.alertWindowSec), 10) || settings.alertWindowSec));
-  const metricAgg = collectMetricCounters(db, windowSec);
-  const jobStatus = getJobStatusSnapshot(db);
-  const alerts = buildRuntimeAlerts(db, settings, windowSec);
+  const queueParam = normalizeQueueName(req.query.queue);
+  if (queueParam && !queueNamePattern.test(queueParam)) {
+    return badRequest(res, "VALIDATION_ERROR", "'queue' must match ^[a-z0-9._:-]{1,80}$");
+  }
+  const allowedQueues = Array.isArray(req.auth?.queue_allowlist) ? req.auth.queue_allowlist : null;
+  if (allowedQueues && queueParam && !allowedQueues.includes(queueParam)) {
+    return res.status(403).json({
+      ok: false,
+      error: {
+        code: "FORBIDDEN",
+        message: `Queue '${queueParam}' is not allowed for this API key.`,
+        details: { allowed_queues: allowedQueues }
+      }
+    });
+  }
+  const queueScope = queueParam ? [queueParam] : (allowedQueues || null);
+  const metricAgg = collectMetricCounters(db, windowSec, queueScope);
+  const jobStatus = getJobStatusSnapshot(db, queueScope);
+  const alerts = buildRuntimeAlerts(db, settings, windowSec, queueScope);
   return res.json({
     ok: true,
     metrics: {
@@ -1393,10 +2086,105 @@ app.post("/v1/memory/search", auth, async (req, res) => {
   });
 });
 
+// Working Memory API endpoints
+
+app.get("/v1/working-memory", auth, (req, res) => {
+  const sessionId = String(req.query.session_id || "").trim();
+  const limit = Math.max(1, Math.min(100, parseInt(String(req.query.limit || "10"), 10) || 10));
+
+  if (sessionId) {
+    const state = loadWorkingMemoryState(db, sessionId);
+    if (!state) {
+      return res.status(404).json({
+        ok: false,
+        error: { code: "NOT_FOUND", message: "Working memory session not found" }
+      });
+    }
+    return res.json({ ok: true, state });
+  }
+
+  const sessions = listRecentWorkingMemorySessions(db, limit);
+  return res.json({
+    ok: true,
+    sessions,
+    count: sessions.length
+  });
+});
+
+app.get("/v1/working-memory/latest", auth, (req, res) => {
+  const state = getLatestWorkingMemorySession(db);
+  if (!state) {
+    return res.json({
+      ok: true,
+      state: null,
+      message: "No active working memory session found"
+    });
+  }
+  return res.json({ ok: true, state });
+});
+
+app.post("/v1/working-memory", auth, (req, res) => {
+  const body = req.body ?? {};
+  const sessionId = String(body.session_id || generateSessionId()).trim();
+  const state = body.state && typeof body.state === "object" ? body.state : {};
+  const ttlSec = parseOptionalInt(body.ttl_sec, { min: 60, max: 7 * 24 * 3600, field: "ttl_sec" });
+
+  if (!sessionId || !/^session\.[a-z0-9._-]+$/i.test(sessionId)) {
+    return badRequest(res, "VALIDATION_ERROR", "'session_id' must match pattern session.xxx");
+  }
+
+  try {
+    const result = saveWorkingMemoryState(db, sessionId, state, ttlSec || undefined);
+    const saved = loadWorkingMemoryState(db, sessionId);
+    return res.status(201).json({
+      ok: true,
+      session_id: result.session_id,
+      updated_at: result.updated_at,
+      state: saved
+    });
+  } catch (e) {
+    return res.status(400).json({
+      ok: false,
+      error: { code: "VALIDATION_ERROR", message: String(e?.message || e) }
+    });
+  }
+});
+
+app.delete("/v1/working-memory", auth, (req, res) => {
+  const sessionId = String(req.query.session_id || "").trim();
+  if (!sessionId) {
+    return badRequest(res, "VALIDATION_ERROR", "Missing 'session_id' query parameter");
+  }
+
+  const result = clearWorkingMemoryState(db, sessionId);
+  return res.json({
+    ok: true,
+    session_id: sessionId,
+    deleted_entries: result.deleted
+  });
+});
+
 app.get("/v1/schedules", auth, (req, res) => {
   const enabledQ = req.query.enabled == null ? null : String(req.query.enabled);
   const typeQ = req.query.type == null ? "" : normalizeTypeName(req.query.type);
+  const queueQ = req.query.queue == null ? "" : normalizeQueueName(req.query.queue);
   const limit = Math.min(parseInt(req.query.limit || "100", 10) || 100, 500);
+  const allowedQueues = authQueueAllowlist(req.auth);
+
+  if (queueQ && !queueNamePattern.test(queueQ)) {
+    return badRequest(res, "VALIDATION_ERROR", "'queue' must match ^[a-z0-9._:-]{1,80}$");
+  }
+
+  if (queueQ && allowedQueues && !allowedQueues.includes(queueQ)) {
+    return res.status(403).json({
+      ok: false,
+      error: {
+        code: "FORBIDDEN",
+        message: `Queue '${queueQ}' is not allowed for this API key.`,
+        details: { allowed_queues: allowedQueues }
+      }
+    });
+  }
 
   const where = [];
   const params = [];
@@ -1413,10 +2201,19 @@ app.get("/v1/schedules", auth, (req, res) => {
     where.push("type = ?");
     params.push(typeQ);
   }
+  if (queueQ) {
+    where.push("queue = ?");
+    params.push(queueQ);
+  }
+  if (allowedQueues) {
+    const queuePlaceholders = allowedQueues.map(() => "?").join(", ");
+    where.push(`queue IN (${queuePlaceholders})`);
+    params.push(...allowedQueues);
+  }
 
   const rows = db.prepare(`
     SELECT
-      id, name, enabled, type, input_json, priority, timeout_sec, max_attempts, tags_json,
+      id, name, enabled, type, queue, input_json, priority, timeout_sec, max_attempts, tags_json,
       interval_sec, cron_expr, next_run_at, last_run_at, last_job_id, last_error_json, created_at, updated_at
     FROM job_schedules
     ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
@@ -1432,13 +2229,7 @@ app.get("/v1/schedules", auth, (req, res) => {
 });
 
 app.get("/v1/schedules/:id", auth, (req, res) => {
-  const row = db.prepare(`
-    SELECT
-      id, name, enabled, type, input_json, priority, timeout_sec, max_attempts, tags_json,
-      interval_sec, cron_expr, next_run_at, last_run_at, last_job_id, last_error_json, created_at, updated_at
-    FROM job_schedules
-    WHERE id = ?
-  `).get(req.params.id);
+  const row = getAuthorizedScheduleRow(req.params.id, req.auth);
   if (!row) return res.status(404).json({ ok: false, error: { code: "NOT_FOUND", message: "Schedule not found" } });
   return res.json({ ok: true, schedule: rowToSchedule(row) });
 });
@@ -1446,6 +2237,7 @@ app.get("/v1/schedules/:id", auth, (req, res) => {
 app.post("/v1/schedules", auth, (req, res) => {
   const body = req.body ?? {};
   const type = normalizeTypeName(body.type);
+  const queue = normalizeQueueName(body.queue) || "default";
   const name = String(body.name || "").trim();
   const inputObj = body.input ?? null;
   const enabled = body.enabled == null ? 1 : (body.enabled ? 1 : 0);
@@ -1457,6 +2249,20 @@ app.post("/v1/schedules", auth, (req, res) => {
   }
   if (!/^[a-z0-9._-]{3,80}$/i.test(type)) {
     return badRequest(res, "VALIDATION_ERROR", "'type' must match ^[a-z0-9._-]{3,80}$");
+  }
+  if (!queueNamePattern.test(queue)) {
+    return badRequest(res, "VALIDATION_ERROR", "'queue' must match ^[a-z0-9._:-]{1,80}$");
+  }
+  const allowedQueues = authQueueAllowlist(req.auth);
+  if (allowedQueues && !allowedQueues.includes(queue)) {
+    return res.status(403).json({
+      ok: false,
+      error: {
+        code: "FORBIDDEN",
+        message: `Queue '${queue}' is not allowed for this API key.`,
+        details: { allowed_queues: allowedQueues }
+      }
+    });
   }
   if (name && name.length > 120) {
     return badRequest(res, "VALIDATION_ERROR", "'name' must be at most 120 characters");
@@ -1508,15 +2314,16 @@ app.post("/v1/schedules", auth, (req, res) => {
 
   db.prepare(`
     INSERT INTO job_schedules (
-      id, name, enabled, type, input_json, priority, timeout_sec, max_attempts, tags_json,
+      id, name, enabled, type, queue, input_json, priority, timeout_sec, max_attempts, tags_json,
       interval_sec, cron_expr, next_run_at, last_run_at, last_job_id, last_error_json, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
   `).run(
     id,
     name || null,
     enabled,
     type,
+    queue,
     JSON.stringify(inputObj),
     priority,
     timeoutSec ?? typeRow.default_timeout_sec ?? 120,
@@ -1531,7 +2338,7 @@ app.post("/v1/schedules", auth, (req, res) => {
 
   const row = db.prepare(`
     SELECT
-      id, name, enabled, type, input_json, priority, timeout_sec, max_attempts, tags_json,
+      id, name, enabled, type, queue, input_json, priority, timeout_sec, max_attempts, tags_json,
       interval_sec, cron_expr, next_run_at, last_run_at, last_job_id, last_error_json, created_at, updated_at
     FROM job_schedules
     WHERE id = ?
@@ -1541,13 +2348,7 @@ app.post("/v1/schedules", auth, (req, res) => {
 });
 
 app.patch("/v1/schedules/:id", auth, (req, res) => {
-  const existing = db.prepare(`
-    SELECT
-      id, name, enabled, type, input_json, priority, timeout_sec, max_attempts, tags_json,
-      interval_sec, cron_expr, next_run_at, last_run_at, last_job_id, last_error_json, created_at, updated_at
-    FROM job_schedules
-    WHERE id = ?
-  `).get(req.params.id);
+  const existing = getAuthorizedScheduleRow(req.params.id, req.auth);
   if (!existing) {
     return res.status(404).json({ ok: false, error: { code: "NOT_FOUND", message: "Schedule not found" } });
   }
@@ -1578,6 +2379,24 @@ app.patch("/v1/schedules/:id", auth, (req, res) => {
       return badRequest(res, "VALIDATION_ERROR", "Unknown or disabled 'type'");
     }
     patch.type = type;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "queue")) {
+    const queue = normalizeQueueName(body.queue) || "default";
+    if (!queueNamePattern.test(queue)) {
+      return badRequest(res, "VALIDATION_ERROR", "'queue' must match ^[a-z0-9._:-]{1,80}$");
+    }
+    const allowedQueues = authQueueAllowlist(req.auth);
+    if (allowedQueues && !allowedQueues.includes(queue)) {
+      return res.status(403).json({
+        ok: false,
+        error: {
+          code: "FORBIDDEN",
+          message: `Queue '${queue}' is not allowed for this API key.`,
+          details: { allowed_queues: allowedQueues }
+        }
+      });
+    }
+    patch.queue = queue;
   }
 
   let startInSecForNextRun;
@@ -1661,7 +2480,7 @@ app.patch("/v1/schedules/:id", auth, (req, res) => {
   db.prepare(`UPDATE job_schedules SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
   const row = db.prepare(`
     SELECT
-      id, name, enabled, type, input_json, priority, timeout_sec, max_attempts, tags_json,
+      id, name, enabled, type, queue, input_json, priority, timeout_sec, max_attempts, tags_json,
       interval_sec, cron_expr, next_run_at, last_run_at, last_job_id, last_error_json, created_at, updated_at
     FROM job_schedules
     WHERE id = ?
@@ -1671,7 +2490,7 @@ app.patch("/v1/schedules/:id", auth, (req, res) => {
 });
 
 app.delete("/v1/schedules/:id", auth, (req, res) => {
-  const row = db.prepare(`SELECT id FROM job_schedules WHERE id = ?`).get(req.params.id);
+  const row = getAuthorizedScheduleRow(req.params.id, req.auth);
   if (!row) {
     return res.status(404).json({ ok: false, error: { code: "NOT_FOUND", message: "Schedule not found" } });
   }
@@ -1826,114 +2645,159 @@ app.patch("/v1/job-types/:name", auth, (req, res) => {
  *  - Idempotency-Key: <string> (optional)
  */
 app.post("/v1/jobs", auth, (req, res) => {
-  const { type, queue, input, priority, timeout_sec, max_attempts, callback_url, tags } = req.body ?? {};
-  const idemKey = (req.header("Idempotency-Key") || "").trim();
-
-  if (!type || typeof type !== "string") return badRequest(res, "VALIDATION_ERROR", "Missing/invalid 'type'");
-
-  const typeRow = db.prepare(`
-    SELECT name, enabled, handler, default_timeout_sec, default_max_attempts
-    FROM job_types
-    WHERE name = ?
-  `).get(type);
-
-  if (!typeRow || !typeRow.enabled) {
-    return badRequest(res, "VALIDATION_ERROR", "Unknown or disabled 'type'");
-  }
-
-  let pr = 5;
-  if (priority != null) {
-    if (!Number.isInteger(priority) || priority < 0 || priority > 10) {
-      return badRequest(res, "VALIDATION_ERROR", "'priority' must be integer 0..10");
+  try {
+    const out = createJobFromPayload(req.body ?? {}, {
+      authInfo: req.auth,
+      idempotencyKey: req.header("Idempotency-Key")
+    });
+    return res.status(out.idempotent ? 200 : 201).json({ ok: true, job: rowToJob(out.row), idempotent: out.idempotent });
+  } catch (e) {
+    if (Number(e?.httpStatus) > 0) {
+      const payload = { ok: false, error: { code: e.errorCode || "VALIDATION_ERROR", message: e.message } };
+      if (e?.errorDetails && typeof e.errorDetails === "object") payload.error.details = e.errorDetails;
+      return res.status(Number(e.httpStatus)).json(payload);
     }
-    pr = priority;
+    return badRequest(res, "VALIDATION_ERROR", String(e?.message || e));
   }
+});
 
-  let to = typeRow.default_timeout_sec;
-  if (timeout_sec != null) {
-    if (!Number.isInteger(timeout_sec) || timeout_sec < 1 || timeout_sec > 3600) {
-      return badRequest(res, "VALIDATION_ERROR", "'timeout_sec' must be integer 1..3600");
-    }
-    to = timeout_sec;
-  }
+app.post("/v1/jobs/submit-intent", auth, (req, res) => {
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const jobsIn = Array.isArray(body.jobs) ? body.jobs : [];
+  const userText = String(body.user_text || "").trim();
+  const options = body.options && typeof body.options === "object" ? body.options : {};
+  const injectToolDocs = options.inject_tool_docs !== false;
+  const repair = options.repair !== false;
 
-  let ma = typeRow.default_max_attempts;
-  if (max_attempts != null) {
-    if (!Number.isInteger(max_attempts) || max_attempts < 1 || max_attempts > 10) {
-      return badRequest(res, "VALIDATION_ERROR", "'max_attempts' must be integer 1..10");
-    }
-    ma = max_attempts;
-  }
+  if (!jobsIn.length) return badRequest(res, "VALIDATION_ERROR", "Missing 'jobs' array");
+  if (jobsIn.length > 40) return badRequest(res, "VALIDATION_ERROR", "'jobs' length must be <= 40");
 
-  const tagsArr = Array.isArray(tags) ? tags.slice(0, 20).map(String) : [];
-  const inputObj = input ?? null;
-  const queueName = normalizeQueueName(queue) || "default";
-  if (!/^[a-z0-9._:-]{1,80}$/i.test(queueName)) {
-    return badRequest(res, "VALIDATION_ERROR", "'queue' must match ^[a-z0-9._:-]{1,80}$");
-  }
+  const createdJobs = [];
+  const normalizedJobs = [];
+  const skipped = [];
+  const repairs = [];
+  const createdByIndex = new Map();
+  const toolDocInjected = new Set();
 
-  const requestFingerprint = stableHash({
-    type, queue: queueName, input: inputObj, priority: pr, timeout_sec: to, max_attempts: ma,
-    callback_url: callback_url ?? null, tags: tagsArr
-  });
+  for (let i = 0; i < jobsIn.length; i += 1) {
+    const src = jobsIn[i] && typeof jobsIn[i] === "object" ? jobsIn[i] : {};
+    const normalized = {
+      type: String(src.type || "").trim(),
+      queue: String(normalizeQueueName(src.queue) || "default"),
+      input: (src.input && typeof src.input === "object" && !Array.isArray(src.input)) ? { ...src.input } : {},
+      priority: Number.isInteger(src.priority) ? src.priority : 5,
+      timeout_sec: Number.isInteger(src.timeout_sec) ? src.timeout_sec : 120,
+      max_attempts: Number.isInteger(src.max_attempts) ? src.max_attempts : 1,
+      tags: Array.isArray(src.tags) ? src.tags.map((x) => String(x || "").trim()).filter(Boolean) : ["chat"]
+    };
 
-  if (idemKey) {
-    const found = db.prepare(`SELECT * FROM idempotency_keys WHERE key = ?`).get(idemKey);
-    if (found) {
-      if (found.request_hash !== requestFingerprint) {
-        return res.status(409).json({
-          ok: false,
-          error: { code: "IDEMPOTENCY_CONFLICT", message: "Idempotency-Key reused with different request" }
-        });
-      }
-      const existing = db.prepare(`SELECT * FROM jobs WHERE id = ?`).get(found.job_id);
-      if (existing) {
-        recordMetricSafe("job.idempotency_hit", { source: "api", labels: { type } });
-        return res.status(200).json({ ok: true, job: rowToJob(existing), idempotent: true });
+    if (repair && normalized.type === "tools.file_search") {
+      const q = String(normalized.input.query || "").trim();
+      if (!q || q.length > 120 || /\r?\n/.test(q)) {
+        normalized.input.query = deriveFileSearchQueryForManager(userText);
+        repairs.push({ idx: i + 1, kind: "file_search_query", value: normalized.input.query });
       }
     }
-  }
+    if (repair && normalized.type === "data.write_file") {
+      const mode = String(normalized.input.mode || "replace").trim().toLowerCase();
+      if (["replace", "append", "prepend"].includes(mode)) {
+        if (normalized.input.create_if_missing !== true) {
+          normalized.input.create_if_missing = true;
+          repairs.push({ idx: i + 1, kind: "write_create_if_missing", value: true });
+        }
+        if (normalized.input.mkdir_p !== true) {
+          normalized.input.mkdir_p = true;
+          repairs.push({ idx: i + 1, kind: "write_mkdir_p", value: true });
+        }
+      }
+    }
 
-  const id = crypto.randomUUID();
-  const now = nowIso();
-
-  const tx = db.transaction(() => {
-    db.prepare(`
-      INSERT INTO jobs (id, type, queue, status, priority, timeout_sec, max_attempts, attempts, callback_url, tags_json, input_json, created_at, updated_at)
-      VALUES (?, ?, ?, 'queued', ?, ?, ?, 0, ?, ?, ?, ?, ?)
-    `).run(
-      id,
-      type,
-      queueName,
-      pr,
-      to,
-      ma,
-      callback_url ? String(callback_url) : null,
-      JSON.stringify(tagsArr),
-      JSON.stringify(inputObj),
-      now,
-      now
+    const depLast = (
+      normalized.input.depends_on_last_job === true
+      || String(normalized.input.depends_on_last_job || "").trim().toLowerCase() === "true"
+      || Number(normalized.input.depends_on_last_job) === 1
     );
+    if (depLast && createdJobs.length > 0) {
+      const prevId = String(createdJobs[createdJobs.length - 1]?.job?.id || "").trim();
+      if (prevId) {
+        const existing = Array.isArray(normalized.input.depends_on)
+          ? normalized.input.depends_on.map((x) => String(x || "").trim()).filter(Boolean)
+          : [];
+        if (!existing.includes(prevId)) existing.push(prevId);
+        normalized.input.depends_on = existing;
+      }
+    }
+    if (Array.isArray(normalized.input.depends_on_idx) && normalized.input.depends_on_idx.length) {
+      const depIds = normalized.input.depends_on_idx
+        .map((n) => Number(n))
+        .filter((n) => Number.isInteger(n) && n > 0 && n <= jobsIn.length)
+        .map((n) => createdByIndex.get(n))
+        .filter((id) => String(id || "").trim());
+      if (depIds.length) {
+        const existing = Array.isArray(normalized.input.depends_on)
+          ? normalized.input.depends_on.map((x) => String(x || "").trim()).filter(Boolean)
+          : [];
+        for (const depId of depIds) {
+          if (!existing.includes(depId)) existing.push(depId);
+        }
+        normalized.input.depends_on = existing;
+      }
+    }
+    delete normalized.input.depends_on_last_job;
+    delete normalized.input.depends_on_idx;
 
-    if (idemKey) {
-      db.prepare(`
-        INSERT INTO idempotency_keys (key, request_hash, job_id, created_at)
-        VALUES (?, ?, ?, ?)
-      `).run(idemKey, requestFingerprint, id, now);
+    if (injectToolDocs) {
+      const docPath = toolDocPathForType(normalized.type);
+      const isDocRead = normalized.type === "data.file_read" && /tools\/[^/]+\/TOOL\.md$/i.test(String(normalized.input.path || ""));
+      if (docPath && !isDocRead && !toolDocInjected.has(normalized.type)) {
+        try {
+          const docJobPayload = {
+            type: "data.file_read",
+            queue: normalized.queue,
+            input: { path: docPath },
+            priority: 5,
+            timeout_sec: 30,
+            max_attempts: 1,
+            tags: ["chat", "tool-doc"]
+          };
+          const docCreated = createJobFromPayload(docJobPayload, { authInfo: req.auth });
+          const docRow = rowToJob(docCreated.row);
+          createdJobs.push({ source_idx: i + 1, kind: "tool_doc", tool_type: normalized.type, job: docRow });
+          const existing = Array.isArray(normalized.input.depends_on)
+            ? normalized.input.depends_on.map((x) => String(x || "").trim()).filter(Boolean)
+            : [];
+          if (!existing.includes(docRow.id)) existing.push(docRow.id);
+          normalized.input.depends_on = existing;
+          toolDocInjected.add(normalized.type);
+        } catch (e) {
+          skipped.push({ idx: i + 1, type: normalized.type, code: e?.errorCode || "VALIDATION_ERROR", message: String(e?.message || e) });
+          continue;
+        }
+      }
     }
 
-    log(id, "info", "Job created", { type, queue: queueName, priority: pr, timeout_sec: to, max_attempts: ma, handler: typeRow.handler });
-    recordMetricSafe("job.created", { source: "api", labels: { type, queue: queueName } });
+    normalizedJobs.push({ idx: i + 1, ...normalized });
+    try {
+      const created = createJobFromPayload(normalized, { authInfo: req.auth });
+      const row = rowToJob(created.row);
+      createdJobs.push({ source_idx: i + 1, kind: "intent", job: row });
+      createdByIndex.set(i + 1, row.id);
+    } catch (e) {
+      skipped.push({ idx: i + 1, type: normalized.type, code: e?.errorCode || "VALIDATION_ERROR", message: String(e?.message || e) });
+    }
+  }
+
+  return res.status(createdJobs.length > 0 ? 201 : 200).json({
+    ok: true,
+    created_jobs: createdJobs,
+    normalized_jobs: normalizedJobs,
+    repairs,
+    skipped
   });
-
-  tx();
-
-  const row = db.prepare(`SELECT * FROM jobs WHERE id = ?`).get(id);
-  return res.status(201).json({ ok: true, job: rowToJob(row) });
 });
 
 app.get("/v1/jobs/:id", auth, (req, res) => {
-  const row = db.prepare(`SELECT * FROM jobs WHERE id = ?`).get(req.params.id);
+  const row = getAuthorizedJobRow(req.params.id, req.auth);
   if (!row) return res.status(404).json({ ok: false, error: { code: "NOT_FOUND", message: "Job not found" } });
   res.json({ ok: true, job: rowToJob(row) });
 });
@@ -1943,6 +2807,18 @@ app.get("/v1/jobs", auth, (req, res) => {
   const type = req.query.type ? String(req.query.type) : null;
   const queue = req.query.queue ? String(req.query.queue).trim() : null;
   const limit = Math.min(parseInt(req.query.limit || "50", 10) || 50, 200);
+  const allowedQueues = authQueueAllowlist(req.auth);
+
+  if (queue && allowedQueues && !allowedQueues.includes(queue)) {
+    return res.status(403).json({
+      ok: false,
+      error: {
+        code: "FORBIDDEN",
+        message: `Queue '${queue}' is not allowed for this API key.`,
+        details: { allowed_queues: allowedQueues }
+      }
+    });
+  }
 
   const where = [];
   const params = [];
@@ -1950,6 +2826,11 @@ app.get("/v1/jobs", auth, (req, res) => {
   if (status) { where.push("status = ?"); params.push(status); }
   if (type) { where.push("type = ?"); params.push(type); }
   if (queue) { where.push("queue = ?"); params.push(queue); }
+  if (allowedQueues) {
+    const queuePlaceholders = allowedQueues.map(() => "?").join(", ");
+    where.push(`queue IN (${queuePlaceholders})`);
+    params.push(...allowedQueues);
+  }
 
   const sql = `
     SELECT * FROM jobs
@@ -1965,7 +2846,7 @@ app.get("/v1/jobs", auth, (req, res) => {
 });
 
 app.post("/v1/jobs/:id/cancel", auth, (req, res) => {
-  const row = db.prepare(`SELECT * FROM jobs WHERE id = ?`).get(req.params.id);
+  const row = getAuthorizedJobRow(req.params.id, req.auth);
   if (!row) return res.status(404).json({ ok: false, error: { code: "NOT_FOUND", message: "Job not found" } });
 
   if (row.status === "succeeded" || row.status === "failed") {
@@ -1979,13 +2860,16 @@ app.post("/v1/jobs/:id/cancel", auth, (req, res) => {
   recordMetricSafe("job.cancelled", { source: "api", labels: { type: row.type || "unknown" } });
 
   const updated = db.prepare(`SELECT * FROM jobs WHERE id = ?`).get(row.id);
+  try {
+    if (updated) writeJobToWorkspaceIndex(workspaceRoot, updated, { event: "cancelled" });
+  } catch {}
   res.json({ ok: true, job: rowToJob(updated) });
 });
 
 app.get("/v1/jobs/:id/logs", auth, (req, res) => {
   const tail = Math.min(parseInt(req.query.tail || "200", 10) || 200, 2000);
-  const exists = db.prepare(`SELECT 1 FROM jobs WHERE id = ?`).get(req.params.id);
-  if (!exists) return res.status(404).json({ ok: false, error: { code: "NOT_FOUND", message: "Job not found" } });
+  const job = getAuthorizedJobRow(req.params.id, req.auth);
+  if (!job) return res.status(404).json({ ok: false, error: { code: "NOT_FOUND", message: "Job not found" } });
 
   const rows = db.prepare(`
     SELECT id, ts, level, message, meta_json
@@ -2012,8 +2896,8 @@ app.get("/v1/jobs/:id/logs", auth, (req, res) => {
 
 app.get("/v1/jobs/:id/stream", authSse, (req, res) => {
   const jobId = req.params.id;
-  const exists = db.prepare(`SELECT 1 FROM jobs WHERE id = ?`).get(jobId);
-  if (!exists) return res.status(404).json({ ok: false, error: { code: "NOT_FOUND", message: "Job not found" } });
+  const job = getAuthorizedJobRow(jobId, req.auth);
+  if (!job) return res.status(404).json({ ok: false, error: { code: "NOT_FOUND", message: "Job not found" } });
 
   res.setHeader("content-type", "text/event-stream");
   res.setHeader("cache-control", "no-cache");

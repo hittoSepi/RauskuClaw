@@ -20,12 +20,22 @@
         <div class="badge" :class="pingOk ? 'ok' : 'err'">
           API: {{ pingOk ? "ok" : "nope" }}
         </div>
+        <div class="badge" :class="authOk ? 'ok' : ''">
+          Auth: {{ authRoleLabel }}
+        </div>
+        <div class="badge" :title="authQueuesLabel">
+          Queues: {{ authQueuesLabel }}
+        </div>
         <div class="badge">Base: same origin</div>
         <div class="spacer"></div>
         <div style="color: var(--muted); font-size: 13px">
           This UI is intentionally boring. Boring survives production.
         </div>
       </div>
+    </div>
+
+    <div v-if="authRoleLabel === 'read'" class="card app-readonly-note">
+      Read-only API key active. Mutating operations (create/update/delete/cancel) are blocked by server policy.
     </div>
 
     <div class="app-content">
@@ -35,15 +45,17 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from "vue";
+import { computed, ref, onMounted } from "vue";
 import { api, setKey } from "./api.js";
+import { refreshAuthState, useAuthState } from "./auth_state.js";
 
 const key = ref(sessionStorage.getItem("rauskuclaw_api_key") || "");
 const pingOk = ref(false);
+const { authInfo } = useAuthState();
 
 function saveKey() {
   setKey(key.value);
-  ping();
+  void refreshRuntimeStatus();
 }
 
 async function ping() {
@@ -55,7 +67,19 @@ async function ping() {
   }
 }
 
-onMounted(ping);
+const authRoleLabel = computed(() => String(authInfo.value?.role || "unknown"));
+const authOk = computed(() => authInfo.value && typeof authInfo.value === "object");
+const authQueuesLabel = computed(() => {
+  const list = Array.isArray(authInfo.value?.queue_allowlist) ? authInfo.value.queue_allowlist : null;
+  if (!list || list.length < 1) return "all";
+  return list.join(",");
+});
+
+async function refreshRuntimeStatus() {
+  await Promise.allSettled([ping(), refreshAuthState()]);
+}
+
+onMounted(refreshRuntimeStatus);
 </script>
 
 <style scoped>
@@ -87,6 +111,14 @@ onMounted(ping);
 
 .app-status {
   margin-bottom: 14px;
+}
+
+.app-readonly-note {
+  margin-bottom: 14px;
+  border-color: rgba(250, 204, 116, 0.5);
+  background: rgba(250, 204, 116, 0.08);
+  color: #fcd68a;
+  font-size: 13px;
 }
 
 .app-content {

@@ -172,6 +172,33 @@ function updateRauskuclawConfig(repoRoot, envValues) {
   return configPath;
 }
 
+function copyMissingFreshDeployTemplates(repoRoot) {
+  const templatesRoot = path.join(repoRoot, "fresh_deploy", "templates");
+  if (!fs.existsSync(templatesRoot)) return [];
+
+  const copied = [];
+  const walk = (srcDir, relDir = "") => {
+    const entries = fs.readdirSync(srcDir, { withFileTypes: true });
+    for (const ent of entries) {
+      const relPath = relDir ? path.join(relDir, ent.name) : ent.name;
+      const srcPath = path.join(srcDir, ent.name);
+      const dstPath = path.join(repoRoot, relPath);
+      if (ent.isDirectory()) {
+        walk(srcPath, relPath);
+        continue;
+      }
+      if (!ent.isFile()) continue;
+      if (fs.existsSync(dstPath)) continue;
+      fs.mkdirSync(path.dirname(dstPath), { recursive: true });
+      fs.copyFileSync(srcPath, dstPath);
+      copied.push(relPath.split(path.sep).join("/"));
+    }
+  };
+
+  walk(templatesRoot, "");
+  return copied;
+}
+
 function buildNextValues(base, sets, defaultsFromTemplate) {
   const next = { ...base, ...defaultsFromTemplate, ...sets };
   next.API_KEY = withDefault(next.API_KEY, generateApiKey());
@@ -364,7 +391,12 @@ async function runSetup(ctx, args) {
     error(e.message || String(e));
     return 1;
   }
+  const seeded = copyMissingFreshDeployTemplates(ctx.repoRoot);
+  if (seeded.length > 0) {
+    info("Seeded fresh_deploy defaults:");
+    for (const rel of seeded) info(`  + ${rel}`);
+  }
   return 0;
 }
 
-module.exports = { runSetup, parseSetupArgs, buildNextValues, summarizeDiff };
+module.exports = { runSetup, parseSetupArgs, buildNextValues, summarizeDiff, copyMissingFreshDeployTemplates };

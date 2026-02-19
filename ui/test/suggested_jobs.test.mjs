@@ -11,6 +11,31 @@ test("parseSuggestedJobs returns empty on invalid JSON", () => {
   assert.deepEqual(parseSuggestedJobs(raw), []);
 });
 
+test("parseSuggestedJobs parses truncated fence when JSON object is complete", () => {
+  const payload = JSON.stringify({
+    jobs: [
+      { type: "data.file_read", input: { path: "README.md" }, priority: 5, timeout_sec: 30, max_attempts: 1, tags: ["chat"] }
+    ]
+  });
+  const raw = `Etsitään tiedosto.\n\`\`\`rausku_jobs\n${payload}\n`;
+  const out = parseSuggestedJobs(raw);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].type, "data.file_read");
+  assert.equal(out[0].input.path, "README.md");
+});
+
+test("parseSuggestedJobs parses raw jobs JSON without fence", () => {
+  const raw = [
+    "Some text before",
+    "{\"jobs\":[{\"type\":\"tools.file_search\",\"input\":{\"query\":\"synapse.py\",\"path\":\".\"},\"priority\":5,\"timeout_sec\":30,\"max_attempts\":1,\"tags\":[\"chat\"]}]}",
+    "Some text after"
+  ].join("\n");
+  const out = parseSuggestedJobs(raw);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].type, "tools.file_search");
+  assert.equal(out[0].input.query, "synapse.py");
+});
+
 test("parseSuggestedJobs normalizes and validates jobs", () => {
   const raw = [
     "prefix",
@@ -63,6 +88,113 @@ test("parseSuggestedJobs normalizes and validates jobs", () => {
     max_attempts: 1,
     tags: []
   });
+});
+
+test("parseSuggestedJobs normalizes shell.exec aliases to tool.exec", () => {
+  const raw = [
+    "```rausku_jobs",
+    JSON.stringify({
+      jobs: [
+        { type: "shell.exec", input: { command: "ls -la" } },
+        { type: "terminal.exec", input: { command: "pwd" } }
+      ]
+    }),
+    "```"
+  ].join("\n");
+
+  const out = parseSuggestedJobs(raw);
+  assert.equal(out.length, 2);
+  assert.equal(out[0].type, "tool.exec");
+  assert.equal(out[1].type, "tool.exec");
+});
+
+test("parseSuggestedJobs normalizes selected tools aliases", () => {
+  const raw = [
+    "```rausku_jobs",
+    JSON.stringify({
+      jobs: [
+        { type: "tools.exec", input: { command: "ls -la" } },
+        { type: "tools.fetch", input: { url: "https://example.com" } }
+      ]
+    }),
+    "```"
+  ].join("\n");
+
+  const out = parseSuggestedJobs(raw);
+  assert.equal(out.length, 2);
+  assert.equal(out[0].type, "tool.exec");
+  assert.equal(out[1].type, "tools.fetch");
+});
+
+test("parseSuggestedJobs normalizes web search aliases to tools.web_search", () => {
+  const raw = [
+    "```rausku_jobs",
+    JSON.stringify({
+      jobs: [
+        { type: "tool.web_search", input: { query: "nodejs" } },
+        { type: "web.search", input: { query: "express" } }
+      ]
+    }),
+    "```"
+  ].join("\n");
+
+  const out = parseSuggestedJobs(raw);
+  assert.equal(out.length, 2);
+  assert.equal(out[0].type, "tools.web_search");
+  assert.equal(out[1].type, "tools.web_search");
+});
+
+test("parseSuggestedJobs normalizes file search aliases to tools.file_search", () => {
+  const raw = [
+    "```rausku_jobs",
+    JSON.stringify({
+      jobs: [
+        { type: "file.search", input: { query: "README" } },
+        { type: "workspace.file_search", input: { query: "PLAN" } }
+      ]
+    }),
+    "```"
+  ].join("\n");
+
+  const out = parseSuggestedJobs(raw);
+  assert.equal(out.length, 2);
+  assert.equal(out[0].type, "tools.file_search");
+  assert.equal(out[1].type, "tools.file_search");
+});
+
+test("parseSuggestedJobs maps tools.file_search pattern to query", () => {
+  const raw = [
+    "```rausku_jobs",
+    JSON.stringify({
+      jobs: [
+        { type: "tools.file_search", input: { pattern: "synapse.py", path: "." } }
+      ]
+    }),
+    "```"
+  ].join("\n");
+
+  const out = parseSuggestedJobs(raw);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].type, "tools.file_search");
+  assert.equal(out[0].input.query, "synapse.py");
+});
+
+test("parseSuggestedJobs normalizes find-in-files aliases to tools.find_in_files", () => {
+  const raw = [
+    "```rausku_jobs",
+    JSON.stringify({
+      jobs: [
+        { type: "find.in_files", input: { query: "TODO" } },
+        { type: "tools.find_in_file", input: { query: "FIXME" } }
+      ]
+    }),
+    "```"
+  ].join("\n");
+
+  const out = parseSuggestedJobs(raw);
+  assert.equal(out.length, 2);
+  assert.equal(out[0].type, "tools.find_in_files");
+  assert.equal(out[1].type, "tools.find_in_files");
 });
 
 test("isDuplicateChatSuggestion matches same chat type and same prompt", () => {

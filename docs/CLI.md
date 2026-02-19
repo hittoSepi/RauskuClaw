@@ -106,6 +106,22 @@ Notes:
 - `--scope` is optional. If omitted, reset applies to all scopes.
 - Endpoint contract requires `confirm=true` in request body.
 
+### `rauskuclaw auth whoami [--api <baseUrl>] --json`
+```json
+{
+  "ok": true,
+  "command": "auth.whoami",
+  "auth": {
+    "name": "read-only",
+    "role": "read",
+    "sse": false,
+    "can_write": false,
+    "queue_allowlist": null
+  },
+  "api_base": "http://127.0.0.1:3001"
+}
+```
+
 ### `rauskuclaw doctor --json`
 ```json
 {

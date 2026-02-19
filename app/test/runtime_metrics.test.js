@@ -147,3 +147,58 @@ test("runtime metrics endpoint returns counters and queued alert", async (t) => 
     await api.stop();
   }
 });
+
+test("runtime metrics endpoint is queue-scoped for allowlisted API keys", async (t) => {
+  if (!(await canBindTcp())) {
+    t.skip("TCP bind not allowed in this test environment.");
+    return;
+  }
+
+  const api = await startApi({
+    METRICS_ENABLED: "1",
+    ALERT_QUEUE_STALLED_SEC: "1",
+    ALERT_WINDOW_SEC: "3600",
+    API_AUTH_DISABLED: "0",
+    API_KEYS_JSON: JSON.stringify([
+      { name: "admin", key: "admin-key", role: "admin", sse: true },
+      { name: "alpha-reader", key: "alpha-read-key", role: "read", sse: true, queue_allowlist: ["alpha"] }
+    ])
+  });
+
+  try {
+    const createAlpha = await requestJson(api.baseUrl, "/v1/jobs", {
+      method: "POST",
+      headers: { "x-api-key": "admin-key" },
+      body: { type: "report.generate", queue: "alpha", input: { source: "a" } }
+    });
+    assert.equal(createAlpha.status, 201, createAlpha.text);
+
+    const createBeta = await requestJson(api.baseUrl, "/v1/jobs", {
+      method: "POST",
+      headers: { "x-api-key": "admin-key" },
+      body: { type: "report.generate", queue: "beta", input: { source: "b" } }
+    });
+    assert.equal(createBeta.status, 201, createBeta.text);
+
+    await sleep(1200);
+
+    const scoped = await requestJson(api.baseUrl, "/v1/runtime/metrics?window_sec=3600", {
+      headers: { "x-api-key": "alpha-read-key" }
+    });
+    assert.equal(scoped.status, 200, scoped.text);
+    assert.equal(scoped.json?.metrics?.job_status?.queued, 1);
+    assert.equal(scoped.json?.metrics?.counters?.["job.created"], 1);
+    const scopedAlert = (scoped.json?.alerts || []).find((a) => a?.code === "QUEUE_STALLED");
+    assert.ok(scopedAlert, scoped.text);
+    assert.equal(scopedAlert?.details?.job_id, createAlpha.json?.job?.id);
+
+    const forbidden = await requestJson(api.baseUrl, "/v1/runtime/metrics?queue=beta", {
+      headers: { "x-api-key": "alpha-read-key" }
+    });
+    assert.equal(forbidden.status, 403, forbidden.text);
+    assert.equal(forbidden.json?.error?.code, "FORBIDDEN");
+    assert.deepEqual(forbidden.json?.error?.details?.allowed_queues, ["alpha"]);
+  } finally {
+    await api.stop();
+  }
+});

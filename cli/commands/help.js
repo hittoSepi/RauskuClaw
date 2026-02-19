@@ -12,6 +12,7 @@ Commands:
   logs <api|worker|ui> [--tail N] [--follow] [--since 10m] [--security] [--json]
   smoke [--suite m1|m3|m4] [--success] [--json]
   memory reset --yes [--scope <scope>] [--api <baseUrl>] [--json]
+  auth whoami [--api <baseUrl>] [--json]
   doctor [--json] [--fix-hints]
   codex <login|logout|exec ...> [codex flags...]
   config [show|validate|path] [--json]

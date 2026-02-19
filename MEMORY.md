@@ -2,6 +2,21 @@
 
 Last updated: 2026-02-17
 
+## 2026-02-18 (chat/runtime updates)
+
+- Chat auto-routing now uses a dedicated router-agent that returns `ROUTE: planner` or `ROUTE: agent` before main execution.
+- Manual planner toggle still overrides router-agent.
+- Active chat run UX:
+  - pending message shows `Thinking... (Ns)`.
+  - Send button becomes Stop and cancels active chat job.
+- Memory query pipeline:
+  - query budget scales with `chatMaxPromptTokens` (about half of max prompt budget).
+  - backlog entries include timestamps.
+  - older history is compacted when query gets too large; newest context remains detailed.
+- Suggested job reliability:
+  - parser recovers truncated/unfenced `rausku_jobs` blocks.
+  - auto-repair retries include `data.write_file` base64/content validation issues.
+
 ## Current Milestone Status
 - M1 (Reliable Core Runner): complete
 - M2 (Tooling + Job Type Management UX): complete

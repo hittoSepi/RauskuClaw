@@ -6,6 +6,18 @@ RauskuClaw is a self-hosted job runner stack for contributor-driven development.
 ### `MEMORY.md`: 
   - Remember what you have done previously.
   - Write relevant information what you done in project.
+  - Default workspace path: `workspace/rauskuAssets/MEMORY.md`
+
+### `MEMORY.md` Changes (2026-02-18)
+- Repository context injection policy was tightened:
+  - only `IDENTITY.md` and `SOUL.md` are summarized.
+  - other repo-context files are injected as full text (subject to existing max slice limits).
+- New session warmup behavior:
+  - before clear-greeting, chat runs a hidden warmup summary job for `IDENTITY.md` + `SOUL.md`.
+  - warmup output is kept in provider history context but hidden from normal chat view.
+- `MEMORY.md` remains long-lived, high-signal memory:
+  - store durable decisions/constraints.
+  - avoid transient chat noise.
 
 Current implementation:
 - API: Node.js + Express (`app/server.js`)
@@ -42,6 +54,8 @@ Current implementation:
     - `codex.chat.generate` via Codex CLI (`codex exec`) (disabled by default)
     - `ai.chat.generate` via OpenAI-compatible online API (disabled by default)
     - optional chat memory context injection from semantic memory scope (`input.memory`)
+    - chat memory retrieval now includes recent scope-row fallback when vector hits are sparse
+      - this surfaces freshly written `pending` memory rows before embedding sync is complete
   - timeout handling
   - retry until `max_attempts`
   - callback delivery with optional domain allowlist
@@ -50,6 +64,15 @@ Current implementation:
   - create job
   - job detail/logs
   - chat assistant (`/chat`)
+    - top bar token budget indicator (`tokens ~N / max M`) and active model label
+    - auto routing with dedicated router-agent (`ROUTE: planner|agent`) before main execution
+    - split side panel with `Job List` + `Memory Writes` (expandable content preview)
+    - `INTENT_TO_CONTINUE` system-signal support for auto-follow-up execution
+    - send button toggles to stop/cancel while job is running
+    - pending state shows `Thinking... (Ns)` timer
+    - memory query trace now includes injected memory config/query and per-entry timestamps
+    - memory query includes dynamic context compaction for older chat history
+    - suggested-job auto-repair supports common validation errors (including `data.write_file` base64 fixes)
   - schedules (`/schedules`)
   - job types (edit: enabled/handler/default timeout/default attempts)
 
@@ -128,6 +151,8 @@ Core commands:
 - `rauskuclaw logs api --since 10m --security --json`
 - `rauskuclaw smoke [--suite m1|m3|m4] [--success] [--json]`
 - `rauskuclaw memory reset --yes [--scope <scope>] [--api <baseUrl>] [--json]`
+- `rauskuclaw auth whoami [--api <baseUrl>] [--json]`
+  - includes effective `queue_allowlist` in output
 - `rauskuclaw doctor [--json] [--fix-hints]`
 - `rauskuclaw codex login [--device-auth]`
 - `rauskuclaw codex logout`
@@ -137,6 +162,7 @@ Core commands:
 - `rauskuclaw version`
 
 `rauskuclaw setup` writes `.env` and also syncs matching defaults to `rauskuclaw.json` when the file exists.
+It also seeds missing workspace defaults from `fresh_deploy/templates/` (without overwriting existing files).
 CLI uses Ink-based colored header UI in interactive terminals (logo + command title). In CI/non-TTY it falls back to plain output automatically.
 Force plain mode locally with `RAUSKUCLAW_UI=plain`.
 Most operator commands support machine-readable output with `--json`.
@@ -192,8 +218,25 @@ Base variables from `.env.example`:
 | `OPENAI_API_KEY` | (empty) | Worker | Required when `OPENAI_ENABLED=1` |
 | `OPENAI_MODEL` | `gpt-4.1-mini` | Worker | Model for OpenAI chat completions |
 | `OPENAI_BASE_URL` | `https://api.openai.com` | Worker | OpenAI-compatible API base URL |
+| `OPENAI_CHAT_COMPLETIONS_PATH` | `/v1/chat/completions` | Worker | Chat completions path (or full URL) for OpenAI-compatible providers |
 | `OPENAI_TIMEOUT_MS` | `30000` | Worker | Timeout for provider API calls |
 | `DEPLOY_TARGET_ALLOWLIST` | `staging,prod` | Worker | Allowed targets for `deploy.run` handler |
+| `TOOL_EXEC_ENABLED` | `0` | Worker | Enables `tool.exec` built-in handler when set to `1` |
+| `TOOL_EXEC_ALLOWLIST` | (empty) | Worker | Comma-separated allowed command names/paths for `tool.exec` |
+| `TOOL_EXEC_TIMEOUT_MS` | `10000` | Worker | Default timeout (ms) for `tool.exec` command execution |
+| `DATA_FETCH_ENABLED` | `0` | Worker | Enables `data.fetch` built-in handler when set to `1` |
+| `DATA_FETCH_ALLOWLIST` | (empty) | Worker | Comma-separated allowed HTTPS domains for `data.fetch` |
+| `DATA_FETCH_TIMEOUT_MS` | `8000` | Worker | Default timeout (ms) for `data.fetch` |
+| `DATA_FETCH_MAX_BYTES` | `65536` | Worker | Max response bytes returned by `data.fetch` |
+| `DATA_FILE_READ_ENABLED` | `1` | Worker | Enables `data.file_read` built-in handler when set to `1` |
+| `DATA_FILE_READ_MAX_BYTES` | `65536` | Worker | Max bytes returned by `data.file_read` |
+| `WEB_SEARCH_ENABLED` | `0` | Worker | Enables `tools.web_search` built-in handler when set to `1` |
+| `WEB_SEARCH_PROVIDER` | `duckduckgo` | Worker | Search provider: `duckduckgo` or `brave` |
+| `WEB_SEARCH_TIMEOUT_MS` | `8000` | Worker | Default timeout (ms) for `tools.web_search` |
+| `WEB_SEARCH_MAX_RESULTS` | `5` | Worker | Default max result count for `tools.web_search` |
+| `WEB_SEARCH_BASE_URL` | `https://api.duckduckgo.com` | Worker | Base URL for web search API |
+| `WEB_SEARCH_BRAVE_API_KEY` | (empty) | Worker | Brave Search API key (required when `WEB_SEARCH_PROVIDER=brave`) |
+| `WEB_SEARCH_BRAVE_ENDPOINT` | `https://api.search.brave.com/res/v1/web/search` | Worker | Brave Search endpoint override |
 | `CALLBACK_ALLOWLIST` | (empty) | Worker | Optional comma-separated callback domains |
 | `CALLBACK_SIGNING_ENABLED` | `0` | Worker | Enables HMAC signing for callback requests |
 | `CALLBACK_SIGNING_SECRET` | (empty) | Worker | Shared secret used to sign callback payloads |
@@ -207,6 +250,7 @@ Base variables from `.env.example`:
 
 Notes:
 - In current code, empty `CALLBACK_ALLOWLIST` means all callback domains are allowed.
+- Runtime tool settings can be overridden live from `Settings -> Tools` (`/settings/tools`) via `ui_prefs` scope `runtime_tools` (no restart needed).
 - Callback signing:
   - enable with `CALLBACK_SIGNING_ENABLED=1`
   - signed headers: `x-rauskuclaw-timestamp`, `x-rauskuclaw-signature`
@@ -221,8 +265,24 @@ Notes:
   - legacy single key via `API_KEY` (full admin access)
   - multi-key via `API_KEYS_JSON` or `api.auth.keys` in `rauskuclaw.json`
 - `read` role keys can access read-only routes (`GET/HEAD/OPTIONS`) but cannot run mutating operations.
+- Per-key `queue_allowlist` is supported in multi-key mode to restrict which queues that key can enqueue jobs into.
+- Queue allowlist also scopes job visibility and actions: keys only see/control jobs in allowed queues (`/v1/jobs`, detail, logs, stream, cancel).
+- If `GET /v1/jobs` is called with explicit `?queue=<name>` outside key allowlist, API returns `403 FORBIDDEN` with `allowed_queues` details.
+- Queue allowlist also scopes schedule visibility and actions (`/v1/schedules`, detail, create, patch, delete).
+- Queue allowlist also scopes runtime metrics (`/v1/runtime/metrics`) job snapshot + alert evaluation, and supports optional `?queue=<name>` filter with allowlist enforcement.
 - `codex.chat.generate` is seeded disabled by default; enable from `/types` after Codex CLI login/config is ready.
 - `ai.chat.generate` is seeded disabled by default; enable from `/types` only when OpenAI config is ready.
+- OpenAI-compatible providers may require a non-default chat path; configure with `OPENAI_CHAT_COMPLETIONS_PATH`.
+- Chat UI auto-selects `codex.chat.generate` vs `ai.chat.generate` based on runtime provider enabled-state (`/v1/runtime/providers`) and blocks send when selected provider runtime is disabled.
+
+OpenAI-compatible example (`ai.chat.generate`, e.g. GLM-4.7):
+```bash
+OPENAI_ENABLED=1
+OPENAI_API_KEY=replace-with-provider-key
+OPENAI_MODEL=glm-4.7
+OPENAI_BASE_URL=https://your-provider-base-url
+OPENAI_CHAT_COMPLETIONS_PATH=/v1/chat/completions
+```
 - Memory vector search is default-off (`MEMORY_VECTOR_ENABLED=0`) and requires `SQLITE_VECTOR_EXTENSION_PATH` when enabled.
 - Memory embedding is asynchronous: `POST /v1/memory` marks entry `pending` and enqueues `system.memory.embed.sync`.
 - `POST /v1/memory/search` returns `503 MEMORY_EMBEDDING_UNAVAILABLE` if scope has rows not fully embedded/ready.
@@ -334,9 +394,11 @@ If no auth keys are configured and `API_AUTH_DISABLED` is not `1`, API returns `
 |---|---|---|
 | `GET` | `/health` | Public health check |
 | `GET` | `/v1/ping` | Auth check / API liveness |
+| `GET` | `/v1/runtime/providers` | Provider runtime status (read role gets redacted shape) |
+| `GET` | `/v1/runtime/handlers` | Built-in handler runtime guardrails/status (read role gets redacted shape) |
 | `GET` | `/v1/ui-prefs` | Load persisted UI preferences by scope |
 | `PUT` | `/v1/ui-prefs` | Save persisted UI preferences by scope |
-| `GET` | `/v1/runtime/metrics` | Runtime metric counters + active alerts |
+| `GET` | `/v1/runtime/metrics` | Runtime metric counters + active alerts (`queue` filter optional) |
 | `GET` | `/v1/workspace/files` | List workspace directory entries |
 | `GET` | `/v1/workspace/file` | Read text file content for preview |
 | `PUT` | `/v1/workspace/file` | Save text file content |
@@ -352,8 +414,8 @@ If no auth keys are configured and `API_AUTH_DISABLED` is not `1`, API returns `
 | `DELETE` | `/v1/memory/:id` | Delete one memory entry |
 | `POST` | `/v1/memory/reset` | Destructive memory cleanup (all scopes or one scope) |
 | `POST` | `/v1/memory/search` | Semantic top-k search in scope (vector mode) |
-| `GET` | `/v1/schedules` | List recurring schedules |
-| `POST` | `/v1/schedules` | Create recurring schedule |
+| `GET` | `/v1/schedules` | List recurring schedules (filters: `enabled`, `type`, `queue`) |
+| `POST` | `/v1/schedules` | Create recurring schedule (`queue` optional, default `default`) |
 | `GET` | `/v1/schedules/:id` | Fetch one recurring schedule |
 | `PATCH` | `/v1/schedules/:id` | Update recurring schedule |
 | `DELETE` | `/v1/schedules/:id` | Delete recurring schedule |
@@ -383,7 +445,9 @@ Schedule cadence:
 - `POST /v1/schedules` supports exactly one of:
   - `interval_sec` (integer 5..86400), or
   - `cron` (cron expression parsed with `SCHEDULER_CRON_TZ`, default `UTC`)
+- `POST /v1/schedules` accepts optional `queue` (default `default`).
 - `PATCH /v1/schedules/:id` can switch cadence mode by sending either `interval_sec` or `cron`.
+- Scheduler dispatch enqueues jobs into each schedule's configured `queue`.
 
 ## UI Routes
 UI is mounted under `/ui/` and uses these internal routes:
@@ -397,6 +461,7 @@ UI is mounted under `/ui/` and uses these internal routes:
 | `/settings/schedules` | Recurring schedule management |
 | `/settings/types` | Job type list |
 | `/settings/memory` | Memory scope management + reset scope/reset all |
+| `/settings/tools` | Runtime tool handler overrides (tool.exec / data.fetch / tools.web_search) |
 
 Top menu is intentionally simplified:
 - `Chat`
@@ -438,7 +503,38 @@ Workspace panel in `/chat` supports:
   - `ai.chat.generate` uses OpenAI-compatible online API handler.
   - OpenAI path requires explicit enable (`OPENAI_ENABLED=1`) and API key.
   - provider job types are disabled by default until operator enables them.
-- Built-in `data.fetch` handler is intentionally disabled in current MVP to reduce SSRF risk.
+- Built-in `report.generate` now returns structured output (`title`, `summary`, `metrics`, `highlights`, timestamps) from `input.metrics` or derived `input.values` stats.
+- Built-in `deploy.run` now returns a structured dry-run deployment plan with validated `target`, `strategy`, and `services`.
+- `deploy.run` currently enforces `dry_run=true` and does not execute real deployment actions.
+- Built-in `code.component.generate` now supports validated component generation for `vue`/`react` and `ts`/`js` templates.
+- Built-in `design.frontpage.layout` now returns structured landing-page section plans with validated tone/audience/action inputs.
+- Built-in `tool.exec` provides allowlisted command execution (disabled by default and requires explicit allowlist).
+- `tool.exec` safety model:
+  - requires `TOOL_EXEC_ENABLED=1`
+  - command must exist in `TOOL_EXEC_ALLOWLIST`
+  - executes without shell (`spawn(..., { shell: false })`)
+  - enforces timeout (`TOOL_EXEC_TIMEOUT_MS`)
+- Built-in `data.fetch` supports allowlisted HTTPS fetches (disabled by default).
+- `data.fetch` safety model:
+  - requires `DATA_FETCH_ENABLED=1`
+  - domain must exist in `DATA_FETCH_ALLOWLIST`
+  - only `https://` URLs are accepted
+  - enforces timeout (`DATA_FETCH_TIMEOUT_MS`) and payload cap (`DATA_FETCH_MAX_BYTES`)
+- Built-in `data.file_read` supports workspace file reads (enabled by default).
+- `data.file_read` safety model:
+  - enabled via `DATA_FILE_READ_ENABLED` (default `1`)
+  - path must resolve inside workspace root (`CODEX_OSS_WORKDIR`/configured workspace)
+  - only files (not directories) are returned
+  - payload is capped by `DATA_FILE_READ_MAX_BYTES`
+- Built-in `workflow.run` executes predefined YAML workflows from `workspace/workflows/*.yaml` and enqueues declared step chains.
+- Built-in `tools.web_search` supports web search queries (disabled by default).
+- `tools.web_search` safety model:
+  - requires `WEB_SEARCH_ENABLED=1`
+  - provider configured by `WEB_SEARCH_PROVIDER` (`duckduckgo` or `brave`)
+  - Brave mode requires `WEB_SEARCH_BRAVE_API_KEY`
+  - query is validated and bounded
+  - enforces timeout (`WEB_SEARCH_TIMEOUT_MS`) and result cap (`WEB_SEARCH_MAX_RESULTS`)
+- API now validates risky handler payloads at `POST /v1/jobs` create time (`tool.exec`, `data.fetch`, `data.file_read`, `tools.web_search`, `workflow.run`) to fail fast before queueing.
 - UI stores API key in browser `sessionStorage` only; key is not hardcoded in source.
 - Host `nginx/rauskuclaw.conf` drops common scanner probe paths (for `.env`, `.git`, `@fs`, AWS creds paths, terraform secrets) with `444` before API proxying.
 
@@ -493,11 +589,28 @@ Runbook-lite troubleshooting:
   - verify `rauskuclaw-ui` container and port `3002`
 
 ## Known Gaps / Non-Goals (Current MVP)
-- Built-in handlers are mostly stubs for controlled behavior testing.
+- Built-in handler ecosystem is still intentionally small and security-first for networked capabilities.
 - Provider integration is early-stage (Codex/OpenAI handlers only, no multi-provider orchestration yet).
 - Semantic search currently has no automatic backfill for old memory rows (new writes are embedded asynchronously).
-- No advanced auth model (single API key only).
-- No dedicated metrics/alerting pipeline yet.
+
+## MCP Server
+RauskuClaw includes a Model Context Protocol (MCP) server for AI assistant integration. See [`mcp-server/README.md`](./mcp-server/README.md) for details.
+
+### Claude Desktop Configuration
+```json
+{
+  "mcpServers": {
+    "rauskuclaw": {
+      "command": "node",
+      "args": ["/opt/openclaw/mcp-server/index.js"],
+      "env": {
+        "RAUSKUCLAW_API_URL": "http://localhost:3001",
+        "RAUSKUCLAW_API_KEY": "your-api-key"
+      }
+    }
+  }
+}
+```
 
 ## Roadmap Link
 See [`PLAN.md`](./PLAN.md) for phased implementation milestones and acceptance criteria.
