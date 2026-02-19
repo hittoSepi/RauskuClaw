@@ -1,4 +1,4 @@
-# RauskuClaw
+## RauskuClaw™ - A stubbornly practical automation + UI stack for OpenClaw.
 
 ## What This Is
 RauskuClaw is a self-hosted job runner stack for contributor-driven development.

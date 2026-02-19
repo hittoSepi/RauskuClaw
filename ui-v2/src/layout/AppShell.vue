@@ -41,7 +41,8 @@ const uiStore = useUiStore()
 .app-shell {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
   background-color: var(--bg-0);
 }
 

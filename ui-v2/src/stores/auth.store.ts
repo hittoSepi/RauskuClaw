@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { apiClient } from '../shared/api'
+import { apiClient, isNetworkError, isAuthError, isApiError } from '../shared/api'
 
 const SESSION_STORAGE_KEY = 'rauskuclaw_api_key'
 
@@ -67,10 +67,9 @@ export const useAuthStore = defineStore('auth', () => {
             }
           }
         } catch (err) {
-          const apiErr = err as { status?: number; message?: string }
-          
-          if (apiErr.status === 401 || apiErr.status === 403) {
-            // Invalid key - clear it
+          // Use normalized error codes for consistent handling
+          if (isAuthError(err)) {
+            // 401/403 - Invalid key, clear it
             apiKey.value = ''
             authStatus.value = 'invalid'
             try {
@@ -78,11 +77,15 @@ export const useAuthStore = defineStore('auth', () => {
             } catch {
               // Ignore
             }
-          } else {
-            // Network/other error - don't clear key, but show gate
+          } else if (isNetworkError(err)) {
+            // Network error - don't clear key, it might be valid
             // Key might be valid, server just unreachable
             authStatus.value = 'invalid'
             bootstrapError.value = 'Unable to verify API key - server unreachable'
+          } else {
+            // Other error - treat as invalid but preserve key in session
+            authStatus.value = 'invalid'
+            bootstrapError.value = isApiError(err) ? err.message : 'Unable to verify API key'
           }
         }
       } finally {

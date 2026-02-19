@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useAuthStore } from '../stores/auth.store'
-import { apiClient } from '../shared/api'
+import { apiClient, isAuthError, isNetworkError, isApiError } from '../shared/api'
 
 const authStore = useAuthStore()
 
@@ -54,11 +54,15 @@ async function handleSubmit() {
     authStore.setApiKey(trimmedKey)
     authStore.markValid(response.auth)
   } catch (err) {
-    const apiErr = err as { status?: number }
-    if (apiErr.status === 401 || apiErr.status === 403) {
+    // Use normalized error codes for consistent error messages
+    if (isAuthError(err)) {
       validationError.value = 'Invalid API key'
-    } else {
+    } else if (isNetworkError(err)) {
       validationError.value = 'Unable to connect to server'
+    } else if (isApiError(err)) {
+      validationError.value = err.message
+    } else {
+      validationError.value = 'An unexpected error occurred'
     }
   } finally {
     isValidating.value = false
@@ -93,6 +97,7 @@ function handleKeydown(event: KeyboardEvent) {
       <div
         v-if="authStore.requiresAuth"
         class="api-key-gate-overlay"
+        data-testid="api-key-gate"
         @keydown="handleKeydown"
       >
         <div class="api-key-gate-modal" role="dialog" aria-modal="true" aria-labelledby="api-key-title">

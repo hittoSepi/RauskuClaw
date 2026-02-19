@@ -60,6 +60,7 @@
 
 /* Base styles */
 html {
+  height: 100%;
   font-family: var(--font-sans);
   font-size: var(--text-md);
   line-height: 1.5;
@@ -68,18 +69,24 @@ html {
 }
 
 body {
+  height: 100%;
   margin: 0;
   padding: 0;
   background-color: var(--bg-0);
   color: var(--text-0);
-  min-height: 100vh;
+  overflow: hidden;
 }
 
 #app {
-  min-height: 100vh;
+  height: 100%;
 }
 
-/* Scrollbar styling */
+/* Modal/gate scroll lock */
+body.modal-open {
+  overflow: hidden;
+}
+
+/* Scrollbar styling - default */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -96,6 +103,30 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255,255,255,0.3);
+}
+
+/* Slim scrollbar for chat messages (webkit) */
+.chat-messages::-webkit-scrollbar {
+  width: 6px;
+}
+
+.chat-messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-messages::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.15);
+  border-radius: 3px;
+}
+
+.chat-messages::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.25);
+}
+
+/* Slim scrollbar for chat messages (Firefox) */
+.chat-messages {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.15) transparent;
 }
 
 /* Focus styles */

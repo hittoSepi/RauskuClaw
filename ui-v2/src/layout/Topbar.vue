@@ -39,7 +39,7 @@ function handleLogout() {
 </script>
 
 <template>
-  <div class="topbar">
+  <div class="topbar" data-testid="topbar">
     <!-- Left: Menu toggle + Title -->
     <div class="topbar-left">
       <button class="topbar-menu-btn" @click="uiStore.toggleSidebar()">
@@ -99,6 +99,7 @@ function handleLogout() {
       <button 
         v-if="authStore.isAuthenticated" 
         class="topbar-action topbar-action--logout" 
+        data-testid="logout-btn"
         @click="handleLogout" 
         title="Logout"
       >
