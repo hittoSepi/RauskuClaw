@@ -1,17 +1,19 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useAuthStore } from '../stores/auth.store'
+import { apiClient } from '../shared/api'
 
 const authStore = useAuthStore()
 
 // Local state
 const inputKey = ref('')
 const showKey = ref(false)
-const isSaving = ref(false)
+const isValidating = ref(false)
+const validationError = ref('')
 
 // Computed
 const hasInput = computed(() => inputKey.value.trim().length > 0)
-const showError = computed(() => authStore.authError)
+const showError = computed(() => validationError.value || authStore.authError)
 
 // Focus input on mount
 const inputRef = ref<HTMLInputElement | null>(null)
@@ -26,18 +28,35 @@ onMounted(() => {
   }, 100)
 })
 
-// Handle form submit
-function handleSubmit() {
-  if (!hasInput.value) return
+// Handle form submit - validate before saving
+async function handleSubmit() {
+  if (!hasInput.value || isValidating.value) return
   
-  isSaving.value = true
-  authStore.setApiKey(inputKey.value)
-  isSaving.value = false
+  const trimmedKey = inputKey.value.trim()
+  validationError.value = ''
+  isValidating.value = true
+  
+  try {
+    // Validate the key by calling ping with the override
+    await apiClient.ping({ apiKey: trimmedKey })
+    // Success - store the validated key
+    authStore.setApiKey(trimmedKey)
+  } catch (err) {
+    const apiErr = err as { status?: number }
+    if (apiErr.status === 401 || apiErr.status === 403) {
+      validationError.value = 'Invalid API key'
+    } else {
+      validationError.value = 'Unable to connect to server'
+    }
+  } finally {
+    isValidating.value = false
+  }
 }
 
 // Handle clear
 function handleClear() {
   inputKey.value = ''
+  validationError.value = ''
   authStore.clearApiKey()
 }
 
@@ -117,10 +136,10 @@ function handleKeydown(event: KeyboardEvent) {
             <button
               type="button"
               class="api-key-gate-btn api-key-gate-btn--primary"
-              :disabled="!hasInput || isSaving"
+              :disabled="!hasInput || isValidating"
               @click="handleSubmit"
             >
-              {{ isSaving ? 'Saving...' : 'Save' }}
+              {{ isValidating ? 'Validating...' : 'Save' }}
             </button>
           </div>
           

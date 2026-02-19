@@ -8,6 +8,8 @@ export interface ApiOptions {
   body?: unknown
   headers?: Record<string, string>
   signal?: AbortSignal
+  /** Override API key for this request (e.g., for validation before storing) */
+  apiKey?: string
 }
 
 export interface ApiError extends Error {
@@ -22,10 +24,11 @@ export async function api<T = unknown>(
   endpoint: string,
   options: ApiOptions = {}
 ): Promise<T> {
-  const { method = 'GET', body, headers = {}, signal } = options
+  const { method = 'GET', body, headers = {}, signal, apiKey: apiKeyOverride } = options
   
   const authStore = useAuthStore()
-  const apiKey = authStore.getApiKey()
+  // Use override key if provided, otherwise get from store
+  const apiKey = apiKeyOverride !== undefined ? apiKeyOverride : authStore.getApiKey()
   
   const requestHeaders: Record<string, string> = {
     accept: 'application/json',
@@ -97,7 +100,7 @@ export async function api<T = unknown>(
  */
 export const apiClient = {
   // Health
-  ping: () => api<{ ok: boolean }>('/v1/ping'),
+  ping: (options?: { apiKey?: string }) => api<{ ok: boolean }>('/v1/ping', options),
   
   // Auth
   authWhoami: () => api<{ auth?: { role?: string; queue_allowlist?: string[] } }>('/v1/auth/whoami'),
