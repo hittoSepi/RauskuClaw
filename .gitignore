@@ -152,3 +152,5 @@ vite.config.ts.timestamp-*
 # Own settings
 test.sh
 data/*
+
+.env
