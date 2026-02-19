@@ -8,12 +8,12 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/projects',
     name: 'projects',
-    component: () => import('/src/features/projects/pages/ProjectsList.vue'),
+    component: () => import('@/features/projects/pages/ProjectsList.vue'),
     meta: { title: 'Projects' },
   },
   {
     path: '/projects/:projectId',
-    component: () => import('/src/layout/ProjectWorkspace.vue'),
+    component: () => import('@/layout/ProjectWorkspace.vue'),
     props: true,
     children: [
       {
@@ -23,49 +23,49 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'overview',
         name: 'project-overview',
-        component: () => import('/src/features/projects/pages/ProjectOverview.vue'),
+        component: () => import('@/features/projects/pages/ProjectOverview.vue'),
         props: true,
         meta: { title: 'Overview' },
       },
       {
         path: 'chat',
         name: 'project-chat',
-        component: () => import('/src/features/chat/pages/ProjectChat.vue'),
+        component: () => import('@/features/chat/pages/ProjectChat.vue'),
         props: true,
         meta: { title: 'Chat' },
       },
       {
         path: 'tasks',
         name: 'project-tasks',
-        component: () => import('/src/features/tasks/pages/ProjectTasks.vue'),
+        component: () => import('@/features/tasks/pages/ProjectTasks.vue'),
         props: true,
         meta: { title: 'Tasks' },
       },
       {
         path: 'memory',
         name: 'project-memory',
-        component: () => import('/src/features/memory/pages/ProjectMemory.vue'),
+        component: () => import('@/features/memory/pages/ProjectMemory.vue'),
         props: true,
         meta: { title: 'Memory' },
       },
       {
         path: 'repo',
         name: 'project-repo',
-        component: () => import('/src/features/repo/pages/ProjectRepo.vue'),
+        component: () => import('@/features/repo/pages/ProjectRepo.vue'),
         props: true,
         meta: { title: 'Repo' },
       },
       {
         path: 'workdir',
         name: 'project-workdir',
-        component: () => import('/src/features/workdir/pages/ProjectWorkdir.vue'),
+        component: () => import('@/features/workdir/pages/ProjectWorkdir.vue'),
         props: true,
         meta: { title: 'Workdir' },
       },
       {
         path: 'logs',
         name: 'project-logs',
-        component: () => import('/src/features/logs/pages/ProjectLogs.vue'),
+        component: () => import('@/features/logs/pages/ProjectLogs.vue'),
         props: true,
         meta: { title: 'Logs' },
       },
@@ -74,19 +74,19 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/logs',
     name: 'global-logs',
-    component: () => import('/src/features/logs/pages/GlobalLogs.vue'),
+    component: () => import('@/features/logs/pages/GlobalLogs.vue'),
     meta: { title: 'Logs' },
   },
   {
     path: '/settings',
     name: 'settings',
-    component: () => import('/src/features/settings/pages/Settings.vue'),
+    component: () => import('@/features/settings/pages/Settings.vue'),
     meta: { title: 'Settings' },
   },
   {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
-    component: () => import('/src/features/errors/pages/NotFound.vue'),
+    component: () => import('@/features/errors/pages/NotFound.vue'),
   },
 ]
 
