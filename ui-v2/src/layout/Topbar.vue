@@ -3,11 +3,13 @@ import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useUiStore } from '../stores/ui.store'
 import { useProjectsStore } from '../stores/projects.store'
+import { useAuthStore } from '../stores/auth.store'
 
 const router = useRouter()
 const route = useRoute()
 const uiStore = useUiStore()
 const projectsStore = useProjectsStore()
+const authStore = useAuthStore()
 
 const currentProject = computed(() => projectsStore.currentProject)
 const pageTitle = computed(() => {
@@ -29,6 +31,10 @@ function openCommandPalette() {
 
 function openSettings() {
   router.push('/settings')
+}
+
+function handleLogout() {
+  authStore.logout()
 }
 </script>
 
@@ -87,6 +93,16 @@ function openSettings() {
       <!-- Settings -->
       <button class="topbar-action" @click="openSettings" title="Settings">
         <span class="topbar-action-icon">⚙️</span>
+      </button>
+      
+      <!-- Logout (only show when authenticated) -->
+      <button 
+        v-if="authStore.isAuthenticated" 
+        class="topbar-action topbar-action--logout" 
+        @click="handleLogout" 
+        title="Logout"
+      >
+        <span class="topbar-action-icon">🚪</span>
       </button>
     </div>
   </div>

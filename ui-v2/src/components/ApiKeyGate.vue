@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useAuthStore } from '../stores/auth.store'
 import { apiClient } from '../shared/api'
 
@@ -13,19 +13,30 @@ const validationError = ref('')
 
 // Computed
 const hasInput = computed(() => inputKey.value.trim().length > 0)
-const showError = computed(() => validationError.value || authStore.authError)
+const showError = computed(() => validationError.value || authStore.authError || authStore.bootstrapError)
 
-// Focus input on mount
+// Focus input on mount or when gate becomes visible
 const inputRef = ref<HTMLInputElement | null>(null)
+
+// Watch for gate becoming visible to focus input
+watch(() => authStore.requiresAuth, (requiresAuth) => {
+  if (requiresAuth) {
+    setTimeout(() => {
+      inputRef.value?.focus()
+    }, 100)
+  }
+})
 
 onMounted(() => {
   // Pre-fill with current key if any
   inputKey.value = authStore.apiKey || ''
   
-  // Focus input
-  setTimeout(() => {
-    inputRef.value?.focus()
-  }, 100)
+  // Focus input if gate is visible
+  if (authStore.requiresAuth) {
+    setTimeout(() => {
+      inputRef.value?.focus()
+    }, 100)
+  }
 })
 
 // Handle form submit - validate before saving
@@ -37,10 +48,11 @@ async function handleSubmit() {
   isValidating.value = true
   
   try {
-    // Validate the key by calling ping with the override
-    await apiClient.ping({ apiKey: trimmedKey })
-    // Success - store the validated key
+    // Validate the key by calling whoami with the override key
+    const response = await apiClient.authWhoami({ apiKey: trimmedKey })
+    // Success - store the validated key and mark as valid
     authStore.setApiKey(trimmedKey)
+    authStore.markValid(response.auth)
   } catch (err) {
     const apiErr = err as { status?: number }
     if (apiErr.status === 401 || apiErr.status === 403) {

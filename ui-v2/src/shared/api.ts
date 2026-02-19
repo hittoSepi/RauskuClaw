@@ -103,7 +103,8 @@ export const apiClient = {
   ping: (options?: { apiKey?: string }) => api<{ ok: boolean }>('/v1/ping', options),
   
   // Auth
-  authWhoami: () => api<{ auth?: { role?: string; queue_allowlist?: string[] } }>('/v1/auth/whoami'),
+  authWhoami: (options?: { apiKey?: string }) => 
+    api<{ auth?: { role?: string; queue_allowlist?: string[] } }>('/v1/auth/whoami', options),
   
   // Runtime
   runtimeProviders: () => api<{ providers: Record<string, unknown> }>('/v1/runtime/providers'),
