@@ -143,6 +143,15 @@ function migrate() {
 
     CREATE INDEX IF NOT EXISTS idx_metrics_events_ts ON metrics_events(ts);
     CREATE INDEX IF NOT EXISTS idx_metrics_events_name_ts ON metrics_events(name, ts);
+
+    CREATE TABLE IF NOT EXISTS projects_meta (
+      project_id TEXT PRIMARY KEY,
+      display_name TEXT,
+      notes TEXT,
+      tags_json TEXT,
+      archived INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   ensureMemoryColumns();

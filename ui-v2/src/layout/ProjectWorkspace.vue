@@ -62,12 +62,19 @@ watch(projectId, (newId) => {
       >
         Workdir
       </RouterLink>
-      <RouterLink 
+      <RouterLink
         :to="`/projects/${projectId}/logs`"
         class="project-tab"
         :class="{ 'router-link-active': $route.path.includes('/logs') }"
       >
         Logs
+      </RouterLink>
+      <RouterLink
+        :to="`/projects/${projectId}/settings`"
+        class="project-tab"
+        :class="{ 'router-link-active': $route.path.includes('/settings') }"
+      >
+        Settings
       </RouterLink>
     </nav>
 

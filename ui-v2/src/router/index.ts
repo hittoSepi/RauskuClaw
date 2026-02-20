@@ -69,6 +69,13 @@ const routes: RouteRecordRaw[] = [
         props: true,
         meta: { title: 'Logs' },
       },
+      {
+        path: 'settings',
+        name: 'project-settings',
+        component: () => import('@/features/projects/pages/ProjectSettings.vue'),
+        props: true,
+        meta: { title: 'Settings' },
+      },
     ],
   },
   {

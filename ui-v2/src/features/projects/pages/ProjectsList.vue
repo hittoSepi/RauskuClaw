@@ -1,12 +1,35 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { useProjectsStore } from '../../../stores/projects.store'
+import { useProjectsStore } from '@/stores/projects.store'
+import { useProjectMetaStore } from '@/stores/projectMeta.store'
 
 const router = useRouter()
 const projectsStore = useProjectsStore()
+const projectMetaStore = useProjectMetaStore()
 
-const projects = computed(() => projectsStore.projects)
+const showArchived = ref(false)
+
+const allProjects = computed(() => projectsStore.projects)
+
+const visibleProjects = computed(() => {
+  return allProjects.value.filter(project => {
+    const meta = projectMetaStore.getMeta(project.id)
+    if (!showArchived.value && meta.isArchived) {
+      return false
+    }
+    return true
+  })
+})
+
+const archivedCount = computed(() => {
+  return allProjects.value.filter(p => projectMetaStore.getMeta(p.id).isArchived).length
+})
+
+function getDisplayName(project: { id: string; name: string }): string {
+  const meta = projectMetaStore.getMeta(project.id)
+  return meta.displayName || project.name
+}
 
 function openProject(projectId: string) {
   router.push(`/projects/${projectId}/overview`)
@@ -31,22 +54,31 @@ function createProject() {
 <template>
   <div class="projects-list-page">
     <header class="page-header">
-      <h1 class="page-title">Projects</h1>
+      <div class="page-header-left">
+        <h1 class="page-title">Projects</h1>
+        <button
+          v-if="archivedCount > 0"
+          class="btn btn-secondary"
+          @click="showArchived = !showArchived"
+        >
+          {{ showArchived ? 'Hide' : 'Show' }} Archived ({{ archivedCount }})
+        </button>
+      </div>
       <button class="btn btn-primary" @click="createProject">
         + New Project
       </button>
     </header>
 
     <div class="projects-grid">
-      <div 
-        v-for="project in projects" 
+      <div
+        v-for="project in visibleProjects"
         :key="project.id"
         class="project-card"
         @click="openProject(project.id)"
       >
         <div class="project-card-header">
           <span class="project-card-icon">📁</span>
-          <h2 class="project-card-name">{{ project.name }}</h2>
+          <h2 class="project-card-name">{{ getDisplayName(project) }}</h2>
           <span v-if="project.isDefault" class="project-card-badge">default</span>
         </div>
         <p v-if="project.description" class="project-card-description">
@@ -61,10 +93,12 @@ function createProject() {
       </div>
     </div>
 
-    <div v-if="projects.length === 0" class="empty-state">
+    <div v-if="visibleProjects.length === 0" class="empty-state">
       <div class="empty-state-icon">📁</div>
-      <div class="empty-state-title">No projects yet</div>
-      <div class="empty-state-text">Create your first project to get started.</div>
+      <div class="empty-state-title">{{ showArchived ? 'No projects found' : 'No projects yet' }}</div>
+      <div class="empty-state-text">
+        {{ showArchived ? 'Try adjusting your filters.' : 'Create your first project to get started.' }}
+      </div>
     </div>
   </div>
 </template>
@@ -81,6 +115,12 @@ function createProject() {
   align-items: center;
   justify-content: space-between;
   margin-bottom: var(--s-3);
+}
+
+.page-header-left {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
 }
 
 .page-title {
@@ -114,6 +154,11 @@ function createProject() {
 
 .btn-primary:hover {
   background-color: #4a6ae0;
+}
+
+.btn-secondary {
+  background-color: var(--bg-2);
+  border-color: var(--border-0);
 }
 
 .projects-grid {

@@ -1,17 +1,25 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { useUiStore } from '../stores/ui.store'
-import { useProjectsStore } from '../stores/projects.store'
+import { useUiStore } from '@/stores/ui.store'
+import { useProjectsStore } from '@/stores/projects.store'
+import { useProjectMetaStore } from '@/stores/projectMeta.store'
 import { useAuthStore } from '../stores/auth.store'
 
 const router = useRouter()
 const route = useRoute()
 const uiStore = useUiStore()
 const projectsStore = useProjectsStore()
+const projectMetaStore = useProjectMetaStore()
 const authStore = useAuthStore()
 
 const currentProject = computed(() => projectsStore.currentProject)
+
+const currentProjectDisplayName = computed(() => {
+  if (!currentProject.value) return ''
+  const meta = projectMetaStore.getMeta(currentProject.value.id)
+  return meta.displayName || currentProject.value.name
+})
 const pageTitle = computed(() => {
   const meta = route.meta?.title as string | undefined
   return meta || 'RauskuClaw'
@@ -49,7 +57,7 @@ function handleLogout() {
       <div class="topbar-title">
         <span class="topbar-title-text">{{ pageTitle }}</span>
         <span v-if="currentProject" class="topbar-title-project">
-          / {{ currentProject.name }}
+          / {{ currentProjectDisplayName }}
         </span>
       </div>
     </div>

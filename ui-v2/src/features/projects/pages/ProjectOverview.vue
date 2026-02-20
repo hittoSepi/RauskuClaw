@@ -1,14 +1,21 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useProjectsStore } from '../../../stores/projects.store'
+import { useProjectsStore } from '@/stores/projects.store'
+import { useProjectMetaStore } from '@/stores/projectMeta.store'
 
 const route = useRoute()
 const router = useRouter()
 const projectsStore = useProjectsStore()
+const projectMetaStore = useProjectMetaStore()
 
 const projectId = computed(() => route.params.projectId as string)
 const project = computed(() => projectsStore.getProjectById(projectId.value))
+
+const projectDisplayName = computed(() => {
+  const meta = projectMetaStore.getMeta(projectId.value)
+  return meta.displayName || project.value?.name || projectId.value
+})
 
 function openChat() {
   router.push(`/projects/${projectId.value}/chat`)
@@ -28,7 +35,7 @@ function openLogs() {
     <div v-if="project" class="overview-content">
       <!-- Project header -->
       <header class="overview-header">
-        <h1 class="overview-title">{{ project.name }}</h1>
+        <h1 class="overview-title">{{ projectDisplayName }}</h1>
         <span v-if="project.isDefault" class="overview-badge">default</span>
       </header>
 

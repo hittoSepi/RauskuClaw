@@ -1,41 +1,49 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { useUiStore } from '../stores/ui.store'
-import { useProjectsStore } from '../stores/projects.store'
+import { useUiStore } from '@/stores/ui.store'
+import { useProjectsStore } from '@/stores/projects.store'
+import { useProjectMetaStore } from '@/stores/projectMeta.store'
 
 const router = useRouter()
 const route = useRoute()
 const uiStore = useUiStore()
 const projectsStore = useProjectsStore()
+const projectMetaStore = useProjectMetaStore()
 
 const navItems = computed(() => [
-  { 
-    icon: '💬', 
-    label: 'New chat', 
-    action: () => router.push(`/projects/${projectsStore.currentProjectId || 'yleischat'}/chat`) 
+  {
+    icon: '💬',
+    label: 'New chat',
+    action: () => router.push(`/projects/${projectsStore.currentProjectId || 'yleischat'}/chat`)
   },
-  { 
-    icon: '📂', 
-    label: 'Projects', 
+  {
+    icon: '📂',
+    label: 'Projects',
     path: '/projects',
     active: route.path === '/projects'
   },
-  { 
-    icon: '📋', 
-    label: 'Logs', 
+  {
+    icon: '📋',
+    label: 'Logs',
     path: '/logs',
     active: route.path === '/logs'
   },
-  { 
-    icon: '⚙️', 
-    label: 'Settings', 
+  {
+    icon: '⚙️',
+    label: 'Settings',
     path: '/settings',
     active: route.path === '/settings'
   },
 ])
 
 const currentProject = computed(() => projectsStore.currentProject)
+
+const currentProjectDisplayName = computed(() => {
+  if (!currentProject.value) return 'Yleischat'
+  const meta = projectMetaStore.getMeta(currentProject.value.id)
+  return meta.displayName || currentProject.value.name
+})
 
 function navigate(path: string) {
   router.push(path)
@@ -49,7 +57,7 @@ function navigate(path: string) {
       <div class="sidebar-project" @click="navigate('/projects')">
         <span class="sidebar-project-icon">📁</span>
         <span class="sidebar-project-name">
-          {{ currentProject?.name || 'Yleischat' }}
+          {{ currentProjectDisplayName }}
         </span>
         <span class="sidebar-project-chevron">▼</span>
       </div>

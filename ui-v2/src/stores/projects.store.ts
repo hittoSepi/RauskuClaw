@@ -11,6 +11,7 @@ export interface Project {
   createdAt: string
   updatedAt: string
   isDefault?: boolean
+  isArchived?: boolean
 }
 
 const DEFAULT_PROJECT: Project = {
