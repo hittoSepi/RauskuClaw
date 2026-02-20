@@ -78,6 +78,13 @@ const routes: RouteRecordRaw[] = [
     meta: { title: 'Logs' },
   },
   {
+    path: '/runs/:runId',
+    name: 'run-detail',
+    component: () => import('@/features/logs/pages/RunDetail.vue'),
+    props: true,
+    meta: { title: 'Run Details' },
+  },
+  {
     path: '/settings',
     name: 'settings',
     component: () => import('@/features/settings/pages/Settings.vue'),

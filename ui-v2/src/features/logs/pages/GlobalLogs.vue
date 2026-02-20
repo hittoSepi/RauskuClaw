@@ -1,5 +1,13 @@
 <script setup lang="ts">
-// Global Logs page - M2 placeholder
+import { onMounted } from 'vue'
+import { useLogsStore } from '@/stores/logs.store'
+import LogRunList from '../components/LogRunList.vue'
+
+const logsStore = useLogsStore()
+
+onMounted(() => {
+  logsStore.loadGlobalRuns()
+})
 </script>
 
 <template>
@@ -7,20 +15,33 @@
     <header class="page-header">
       <h1 class="page-title">Global Logs</h1>
     </header>
-    <div class="empty-state">
-      <div class="empty-state-icon">📋</div>
-      <div class="empty-state-title">No logs yet</div>
-      <div class="empty-state-text">Run jobs to see logs here.</div>
+    <div class="page-content">
+      <LogRunList />
     </div>
   </div>
 </template>
 
 <style scoped>
-.logs-page { padding: var(--s-3); height: 100%; overflow: auto; }
-.page-header { margin-bottom: var(--s-3); }
-.page-title { font-size: var(--text-xl); font-weight: 600; color: var(--text-0); margin: 0; }
-.empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 50%; text-align: center; }
-.empty-state-icon { font-size: 64px; margin-bottom: var(--s-2); opacity: 0.5; }
-.empty-state-title { font-size: var(--text-lg); font-weight: 500; color: var(--text-1); margin-bottom: var(--s-1); }
-.empty-state-text { font-size: var(--text-sm); color: var(--text-2); }
+.logs-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.page-header {
+  padding: var(--s-3);
+  border-bottom: 1px solid var(--border-0);
+}
+
+.page-title {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  color: var(--text-0);
+  margin: 0;
+}
+
+.page-content {
+  flex: 1;
+  min-height: 0;
+}
 </style>
