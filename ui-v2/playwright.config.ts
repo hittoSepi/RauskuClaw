@@ -1,47 +1,35 @@
 import { defineConfig, devices } from '@playwright/test'
 
-/**
- * Playwright configuration for RauskuClaw UI smoke tests
- * Tests use network interception - no backend required
- */
+const isCI = !!process.env.CI
+const isLocalLite = !!process.env.PW_LITE
+
 export default defineConfig({
   testDir: './e2e',
-  fullyParallel: true,
-  forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 1 : undefined,
-  reporter: process.env.CI
-  ? [['list'], ['html', { open: 'never' }]]
-  : [['html', { open: 'on-failure' }]],
-  
+
+  // Lite mode: don't try to be clever, just be stable.
+  fullyParallel: isLocalLite ? false : true,
+
+  forbidOnly: isCI,
+  retries: isCI ? 2 : 0,
+  workers: isCI ? 1 : (isLocalLite ? 1 : undefined),
+
+  reporter: isCI ? 'html' : (isLocalLite ? 'line' : 'html'),
+
   use: {
     baseURL: 'http://localhost:5173',
-    trace: 'retain-on-failure',
-    video: 'retain-on-failure',
-    screenshot: 'only-on-failure',
+    trace: isCI ? 'retain-on-failure' : (isLocalLite ? 'off' : 'retain-on-failure'),
+    video: isCI ? 'retain-on-failure' : (isLocalLite ? 'off' : 'retain-on-failure'),
+    screenshot: isCI ? 'only-on-failure' : (isLocalLite ? 'off' : 'only-on-failure'),
   },
 
   projects: [
-    {
-      name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
-    },
-    // Uncomment for additional browser coverage
-    // {
-    //   name: 'firefox',
-    //   use: { ...devices['Desktop Firefox'] },
-    // },
-    // {
-    //   name: 'webkit',
-    //   use: { ...devices['Desktop Safari'] },
-    // },
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
   ],
 
-  // Run local dev server before tests
   webServer: {
     command: 'npm run dev',
     url: 'http://localhost:5173',
-    reuseExistingServer: !process.env.CI,
-    timeout: 120 * 1000,
+    reuseExistingServer: !isCI,
+    timeout: 120_000,
   },
 })

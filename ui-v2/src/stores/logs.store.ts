@@ -304,6 +304,7 @@ export const useLogsStore = defineStore('logs', () => {
     logCursor.value = null
     nextCursor.value = null
     totalLogCount.value = 0
+    clearSelectedLogLine()
     loadMoreLogs(runId)
   }
 

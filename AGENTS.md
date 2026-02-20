@@ -39,22 +39,29 @@ Agents must follow these rules to keep changes safe, reviewable, and CI-friendly
 5) **Commit** with a clear message.
 6) **Ensure CI** remains green.
 
-## 4) Local verification commands (UI v2)
-Run from `ui-v2/` unless stated otherwise:
+## Local verification commands (UI v2)
 
-```bash
-npm ci
-npm run dev
-npx playwright test
-CI
+Run from `ui-v2/` unless stated otherwise.
 
-GitHub Actions runs Playwright smoke tests. Do not break:
+**Recommended local verification (memory-friendly):**
+- `cd ui-v2 && npm run build && npm run test:e2e:lite:1`
 
-Vite import resolution
+### Playwright local lite mode (memory-friendly)
 
-routes/components referenced by router
+Use lite mode locally to reduce RAM/CPU usage (disables trace/video/screenshot and forces 1 worker).
 
-Playwright config/webServer startup
+- `npm run test:e2e:lite`
+- `npm run test:e2e:lite:1` (1 worker, stops on first failure)
+
+**Important**
+- `PW_LITE` is **local-only**. Do not set it in CI.
+- CI runs without `PW_LITE` and retains artifacts (trace/video) on failure.
+
+### CI safety checks (must not break)
+GitHub Actions runs Playwright smoke tests. Avoid changes that break:
+- Vite import resolution (`@/` alias, tsconfig paths)
+- Routes/components referenced by router
+- Playwright `webServer` startup (`npm run dev` in `ui-v2/`)
 
 5) “Definition of Done” (DoD)
 

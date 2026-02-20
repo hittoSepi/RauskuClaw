@@ -112,8 +112,9 @@ async function copyLink(artifact: Artifact) {
             Open
           </a>
           <button
-            v-if="artifact.href"
             class="artifact-btn artifact-btn--copy"
+            :class="{ 'artifact-btn--disabled': !artifact.href }"
+            :disabled="!artifact.href"
             :data-testid="`artifact-copy-${artifact.id}`"
             @click="copyLink(artifact)"
           >

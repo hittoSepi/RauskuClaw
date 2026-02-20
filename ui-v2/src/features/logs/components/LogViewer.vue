@@ -6,11 +6,13 @@ interface Props {
   logs: LogLine[]
   loading?: boolean
   hasMore?: boolean
+  selectedIndex?: number | null
 }
 
 const props = withDefaults(defineProps<Props>(), {
   loading: false,
   hasMore: false,
+  selectedIndex: null,
 })
 
 const emit = defineEmits<{
@@ -213,6 +215,7 @@ onUnmounted(() => {
           v-for="{ log, actualIndex } in windowedLogs"
           :key="actualIndex"
           class="log-line"
+          :class="{ 'log-line--selected': actualIndex === selectedIndex }"
           :style="{ backgroundColor: getLevelBackground(log.level) }"
           :data-level="log.level"
           :data-index="actualIndex"
@@ -403,6 +406,11 @@ onUnmounted(() => {
 
 .log-line:hover {
   background-color: var(--bg-2);
+}
+
+.log-line--selected {
+  background-color: rgba(91, 124, 255, 0.15) !important;
+  border-left: 2px solid var(--accent);
 }
 
 .log-time {

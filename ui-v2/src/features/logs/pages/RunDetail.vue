@@ -18,6 +18,7 @@ const filteredLogs = computed(() => logsStore.filteredLogs)
 const hasMoreLogs = computed(() => logsStore.hasMoreLogs)
 const totalLogCount = computed(() => logsStore.totalLogCount)
 const artifacts = computed(() => logsStore.selectedRunArtifacts)
+const selectedLogLineIndex = computed(() => logsStore.selectedLogLineIndex)
 
 // Local filter state (for debounced search)
 const searchQuery = ref('')
@@ -198,6 +199,7 @@ function getStatusColor(status: string): string {
               :logs="filteredLogs"
               :loading="isLoadingLogs"
               :has-more="hasMoreLogs"
+              :selected-index="selectedLogLineIndex"
               @load-more="handleLoadMore"
               @select-line="handleSelectLogLine"
             />

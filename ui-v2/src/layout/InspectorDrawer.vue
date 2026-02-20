@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { ref, computed } from 'vue'
 import { useInspectorStore, type InspectorSelectionType } from '../stores/inspector.store'
 import { useUiStore } from '../stores/ui.store'
 
@@ -9,6 +9,9 @@ const uiStore = useUiStore()
 const selection = computed(() => inspectorStore.selection)
 const hasSelection = computed(() => inspectorStore.hasSelection)
 const selectionType = computed(() => inspectorStore.selectionType)
+
+// Track copied field for feedback
+const copiedField = ref<string | null>(null)
 
 const typeLabels: Record<InspectorSelectionType, string> = {
   ChatMessage: 'Chat Message',
@@ -43,6 +46,39 @@ function getIconForType(type: InspectorSelectionType | null): string {
     case 'LogLine': return '📄'
     case 'RepoOperation': return '📦'
     default: return '📄'
+  }
+}
+
+// Get LogLine-specific data for display
+function getLogLineData() {
+  return selection.value?.data as {
+    timestamp?: string
+    level?: string
+    message?: string
+    stream?: string
+    index?: number
+  } | null
+}
+
+// Copy to clipboard helper
+async function copyToClipboard(text: string, field: string) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const textArea = document.createElement('textarea')
+      textArea.value = text
+      textArea.style.position = 'fixed'
+      textArea.style.left = '-999999px'
+      document.body.appendChild(textArea)
+      textArea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textArea)
+    }
+    copiedField.value = field
+    setTimeout(() => { copiedField.value = null }, 2000)
+  } catch {
+    // Silently fail
   }
 }
 </script>
@@ -108,34 +144,87 @@ function getIconForType(type: InspectorSelectionType | null): string {
 
         <!-- Metadata (from data) -->
         <template v-if="selection?.data">
-          <div class="inspector-section-title">Metadata</div>
-          <div 
-            v-for="(value, key) in selection.data" 
-            :key="key"
-            class="inspector-field"
-          >
-            <div class="inspector-field-label">{{ key }}</div>
-            <div class="inspector-field-value">
-              {{ typeof value === 'object' ? JSON.stringify(value) : value }}
-            </div>
-          </div>
-        </template>
+          <!-- LogLine specialized view -->
+          <template v-if="selectionType === 'LogLine'">
+            <div class="inspector-section-title">Log Line Details</div>
 
-        <!-- Actions -->
-        <div class="inspector-actions">
-          <button class="inspector-action-btn">
-            <span class="inspector-action-icon">📌</span>
-            Pin to Memory
-          </button>
-          <button class="inspector-action-btn">
-            <span class="inspector-action-icon">✅</span>
-            Create Task
-          </button>
-          <button class="inspector-action-btn">
-            <span class="inspector-action-icon">📋</span>
-            Open in Logs
-          </button>
-        </div>
+            <div class="inspector-field">
+              <div class="inspector-field-label">Timestamp</div>
+              <div class="inspector-field-value inspector-field-value--mono">
+                {{ getLogLineData()?.timestamp }}
+              </div>
+            </div>
+
+            <div class="inspector-field">
+              <div class="inspector-field-label">Level</div>
+              <div class="inspector-field-value">
+                <span class="log-level-badge" :data-level="getLogLineData()?.level">
+                  {{ getLogLineData()?.level?.toUpperCase() }}
+                </span>
+              </div>
+            </div>
+
+            <div class="inspector-field">
+              <div class="inspector-field-label">Stream</div>
+              <div class="inspector-field-value">{{ getLogLineData()?.stream }}</div>
+            </div>
+
+            <div class="inspector-field">
+              <div class="inspector-field-label">Line</div>
+              <div class="inspector-field-value">{{ getLogLineData()?.index }}</div>
+            </div>
+
+            <div class="inspector-field">
+              <div class="inspector-field-label">Message</div>
+              <div class="inspector-field-value inspector-field-value--pre">
+                {{ getLogLineData()?.message }}
+              </div>
+            </div>
+
+            <!-- Copy actions for LogLine -->
+            <div class="inspector-actions">
+              <button class="inspector-action-btn" @click="copyToClipboard(getLogLineData()?.message || '', 'message')">
+                <span class="inspector-action-icon">📋</span>
+                {{ copiedField === 'message' ? 'Copied!' : 'Copy message' }}
+              </button>
+              <button class="inspector-action-btn" @click="copyToClipboard(JSON.stringify(selection?.data, null, 2), 'json')">
+                <span class="inspector-action-icon">{ }</span>
+                {{ copiedField === 'json' ? 'Copied!' : 'Copy JSON' }}
+              </button>
+            </div>
+          </template>
+
+          <!-- Generic metadata for other types -->
+          <template v-else>
+            <div class="inspector-section-title">Metadata</div>
+            <div
+              v-for="(value, key) in selection.data"
+              :key="key"
+              class="inspector-field"
+            >
+              <div class="inspector-field-label">{{ key }}</div>
+              <div class="inspector-field-value">
+                {{ typeof value === 'object' ? JSON.stringify(value) : value }}
+              </div>
+            </div>
+
+            <!-- Actions -->
+            <div class="inspector-actions">
+              <button class="inspector-action-btn">
+                <span class="inspector-action-icon">📌</span>
+                Pin to Memory
+              </button>
+              <button class="inspector-action-btn">
+                <span class="inspector-action-icon">✅</span>
+                Create Task
+              </button>
+              <button class="inspector-action-btn">
+                <span class="inspector-action-icon">📋</span>
+                Open in Logs
+              </button>
+            </div>
+          </template>
+        </template>
       </div>
     </div>
 
@@ -293,6 +382,46 @@ function getIconForType(type: InspectorSelectionType | null): string {
   background-color: var(--bg-2);
   padding: 4px var(--s-1);
   border-radius: 6px;
+}
+
+.inspector-field-value--pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  max-height: 200px;
+  overflow-y: auto;
+  background-color: var(--bg-2);
+  padding: var(--s-2);
+  border-radius: var(--r-sm);
+}
+
+.log-level-badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.log-level-badge[data-level="error"] {
+  background-color: rgba(255, 77, 109, 0.15);
+  color: var(--danger);
+}
+
+.log-level-badge[data-level="warn"] {
+  background-color: rgba(255, 176, 32, 0.15);
+  color: var(--warn);
+}
+
+.log-level-badge[data-level="info"] {
+  background-color: rgba(91, 124, 255, 0.15);
+  color: var(--accent);
+}
+
+.log-level-badge[data-level="debug"] {
+  background-color: var(--bg-2);
+  color: var(--text-2);
 }
 
 .inspector-actions {
