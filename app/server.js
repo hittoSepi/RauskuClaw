@@ -2992,6 +2992,56 @@ app.get("/v1/jobs/:id/stream", authSse, (req, res) => {
   });
 });
 
+// ============================================
+// Dev-only endpoints
+// ============================================
+
+/**
+ * POST /v1/dev/jobs
+ *
+ * Dev-only endpoint to create a simple test job.
+ * This allows testing the UI in API mode without needing full job creation flow.
+ * Gate behind API_AUTH_DISABLED to ensure it's only used in development.
+ */
+app.post("/v1/dev/jobs", auth, (req, res) => {
+  // Only allow in dev mode. Check for common dev indicators:
+  // - NODE_ENV is not 'production'
+  // - API_AUTH_DISABLED is set (common in local dev)
+  // - Explicit ALLOW_DEV_ENDPOINTS=1
+  const isDev = process.env.NODE_ENV !== "production" ||
+                apiAuthDisabled ||
+                process.env.ALLOW_DEV_ENDPOINTS === "1";
+
+  if (!isDev) {
+    return res.status(404).json({
+      ok: false,
+      error: { code: "NOT_FOUND", message: "Dev endpoints are not available in production" }
+    });
+  }
+
+  try {
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    const queue = String(body.queue || "default").trim();
+    const type = String(body.type || "test").trim();
+
+    // Create a minimal test job
+    const id = crypto.randomUUID();
+    const now = nowIso();
+
+    db.prepare(`
+      INSERT INTO jobs (id, type, queue, status, priority, timeout_sec, max_attempts, attempts, callback_url, tags_json, input_json, created_at, updated_at)
+      VALUES (?, ?, ?, 'queued', 0, 60, 1, 0, NULL, NULL, '{}', ?, ?)
+    `).run(id, type, queue, now, now);
+
+    log(id, "info", `Dev job created`, { type, queue });
+
+    const row = db.prepare(`SELECT * FROM jobs WHERE id = ?`).get(id);
+    res.json({ ok: true, job: rowToJob(row) });
+  } catch (e) {
+    return badRequest(res, "DEV_JOB_ERROR", String(e?.message || e));
+  }
+});
+
 app.listen(port, "0.0.0.0", () => {
   console.log(`[rauskuclaw-api] listening on :${port}`);
 });

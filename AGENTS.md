@@ -97,6 +97,12 @@ M3: log viewer MVP (filter/tail/copy, perf-safe)
 
 M4: artifact list & download/open links
 
+M7: Logs API integration with mock fallback (completed)
+
+M8: First Run Path - dev job creation (completed)
+
+**Project Logs API mode:** Uses queue=<projectId> filtering. The dev job creator sets queue to projectId so Project Logs can display runs.
+
 7) Safety rails (common footguns)
 
 .gitignore: never ignore source folders with broad patterns (e.g. logs will ignore src/features/logs/**).

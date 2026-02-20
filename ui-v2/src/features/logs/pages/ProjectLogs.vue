@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useLogsStore } from '@/stores/logs.store'
+import * as logsApi from '@/features/logs/api/logsApi'
 import LogRunList from '../components/LogRunList.vue'
 
 const route = useRoute()
@@ -16,12 +17,33 @@ const apiErrorRuns = computed(() => logsStore.apiErrorRuns)
 const hasRuns = computed(() => logsStore.hasRuns)
 const runs = computed(() => logsStore.runs)
 
+// Dev job creation state
+const isCreatingJob = ref(false)
+const createJobError = ref<string | null>(null)
+
 onMounted(() => {
   logsStore.loadProjectRuns(projectId)
 })
 
 function handleRetry() {
   logsStore.retryWithApi()
+}
+
+async function handleCreateDevJob() {
+  if (isCreatingJob.value) return
+
+  isCreatingJob.value = true
+  createJobError.value = null
+
+  try {
+    await logsApi.createDevJob(projectId, 'test')
+    // Reload the runs list
+    await logsStore.loadProjectRuns(projectId)
+  } catch (err) {
+    createJobError.value = err instanceof Error ? err.message : 'Failed to create dev job'
+  } finally {
+    isCreatingJob.value = false
+  }
 }
 
 // Determine what message to show
@@ -31,6 +53,13 @@ const statusMessage = computed(() => {
   }
 
   if (dataSource.value === 'api') {
+    if (createJobError.value) {
+      return {
+        type: 'error',
+        title: 'Failed to create test job',
+        message: createJobError.value,
+      }
+    }
     if (apiErrorRuns.value) {
       return {
         type: 'error',
@@ -42,7 +71,8 @@ const statusMessage = computed(() => {
       return {
         type: 'empty',
         title: 'No runs found',
-        message: `No runs found for queue "${projectId}"`,
+        message: `No runs found for queue "${projectId}". Create a test job to see runs appear here.`,
+        showCreateButton: true,
       }
     }
   }
@@ -89,6 +119,15 @@ const statusMessage = computed(() => {
             <div class="status-description">{{ statusMessage.message }}</div>
           </div>
         </div>
+        <button
+          v-if="statusMessage.showCreateButton"
+          class="create-job-button"
+          :disabled="isCreatingJob"
+          @click="handleCreateDevJob"
+          data-testid="create-dev-job"
+        >
+          {{ isCreatingJob ? 'Creating...' : 'Run test job' }}
+        </button>
       </div>
 
       <LogRunList />
@@ -188,16 +227,36 @@ const statusMessage = computed(() => {
   color: var(--text-2);
 }
 
-.retry-button {
+.retry-button,
+.create-job-button {
   padding: var(--s-1) var(--s-3);
   border-radius: var(--rounded);
-  background-color: var(--bg-0, #ffffff);
-  border: 1px solid var(--border-error, rgba(239, 68, 68, 0.3));
-  color: var(--text-error, #ef4444);
   font-size: var(--text-sm);
   font-weight: 500;
   cursor: pointer;
   transition: background-color 0.15s, border-color 0.15s;
+}
+
+.retry-button {
+  background-color: var(--bg-0, #ffffff);
+  border: 1px solid var(--border-error, rgba(239, 68, 68, 0.3));
+  color: var(--text-error, #ef4444);
+}
+
+.create-job-button {
+  background-color: var(--accent, #3b82f6);
+  border: 1px solid var(--accent, #3b82f6);
+  color: var(--text-0, #ffffff);
+}
+
+.create-job-button:hover:not(:disabled) {
+  background-color: var(--accent-hover, #2563eb);
+  border-color: var(--accent-hover, #2563eb);
+}
+
+.create-job-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .retry-button:hover {

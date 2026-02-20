@@ -141,7 +141,6 @@ function transformJobToRunSummary(job: BackendJob): RunSummary {
 
   // Derive finishedAt: terminal statuses have finished
   const finishedAt = isTerminalBackendStatus(job.status) ? job.updated_at : undefined
-  const finishedAt = terminalStatuses.includes(job.status) ? job.updated_at : undefined
 
   // Calculate duration if we have both timestamps
   const durationMs = startedAt && finishedAt
@@ -266,6 +265,25 @@ export async function fetchLogsTail(options: FetchLogsTailOptions): Promise<Fetc
 export async function fetchArtifacts(_runId: string): Promise<Artifact[]> {
   // No backend support for artifacts yet
   return []
+}
+
+/**
+ * Create a dev job for testing
+ * POST /v1/dev/jobs
+ */
+export async function createDevJob(queue: string, type = 'test'): Promise<{ id: string }> {
+  try {
+    const response = await api<{ job: { id: string } }>('/v1/dev/jobs', {
+      method: 'POST',
+      body: { queue, type },
+    })
+    return { id: response.job.id }
+  } catch (error) {
+    if (isApiError(error)) {
+      throw error
+    }
+    throw new Error(`Failed to create dev job: ${error instanceof Error ? error.message : 'Unknown error'}`)
+  }
 }
 
 // ============================================
