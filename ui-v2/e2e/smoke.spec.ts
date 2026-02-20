@@ -25,13 +25,19 @@ async function getSessionStorageKey(page: Page): Promise<string | null> {
 }
 
 test.beforeEach(async ({ page }) => {
-  // Default: whoami returns 401 unless test overrides it
-  await interceptWhoami(page, { status: 401, body: { error: 'Unauthorized' } })
+  // NOTE:
+  // - Route order matters: last registered wins.
+  // - We register a catch-all for /v1/** that FAILS FAST.
+  // - Then we register a default /v1/auth/whoami mock (401) that overrides the catch-all.
+  // - Individual tests can still override whoami by calling interceptWhoami(page, ...)
 
   // Fail fast on any unexpected API call (keeps “no backend required” true)
   await page.route('**/v1/**', async (route) => {
     const url = route.request().url()
-    if (url.includes('/v1/auth/whoami')) return route.continue()
+    if (url.includes('/v1/auth/whoami')) {
+      // Let the dedicated whoami handler (registered below, or overridden by a test) handle this.
+      return route.fallback()
+    }
 
     // If something else hits /v1, your app is leaking real API calls into smoke.
     await route.fulfill({
@@ -41,6 +47,15 @@ test.beforeEach(async ({ page }) => {
         ok: false,
         error: { code: 'E2E_UNEXPECTED_API_CALL', message: `Unexpected API call: ${url}` },
       }),
+    })
+  })
+
+  // Default: whoami returns 401 unless test overrides it
+  await page.route('**/v1/auth/whoami', async (route) => {
+    await route.fulfill({
+      status: 401,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'Unauthorized' }),
     })
   })
 })
