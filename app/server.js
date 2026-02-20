@@ -5,7 +5,6 @@ const path = require("path");
 const { db } = require("./db");
 const { log } = require("./worker");
 const { getConfig, envOrConfig, envIntOrConfig, envBoolOrConfig } = require("./config");
-const { prewarmRepoContextSummaries } = require("./providers/openai");
 const { getMemoryVectorSettings } = require("./memory/settings");
 const { embedText } = require("./memory/ollama_embed");
 const { searchMemoryVectors } = require("./memory/vector_store");
@@ -689,6 +688,10 @@ registerWorkspaceRoutes(app, {
   workspaceFileWriteMaxBytes
 });
 
+// Repo routes
+const registerRepoRoutes = require("./routes/repo");
+registerRepoRoutes(app, { auth });
+
 app.get("/v1/runtime/providers", auth, (req, res) => {
   const codexEnabled = envBoolOrConfig("CODEX_OSS_ENABLED", "providers.codex_oss.enabled", false);
   const codexExecMode = String(envOrConfig("CODEX_EXEC_MODE", "providers.codex_oss.exec_mode", "online")).trim().toLowerCase();
@@ -848,31 +851,6 @@ app.get("/v1/runtime/handlers", auth, (req, res) => {
       }
     }
   });
-});
-
-app.post("/v1/runtime/repo-context/prewarm", auth, (req, res) => {
-  const body = req.body && typeof req.body === "object" ? req.body : {};
-  const type = String(body.type || "").trim();
-  const input = body.input && typeof body.input === "object" ? body.input : {};
-  if (type && type !== "ai.chat.generate") {
-    return res.json({
-      ok: true,
-      skipped: true,
-      reason: `type '${type}' is not supported for repo-context prewarm`
-    });
-  }
-  try {
-    const out = prewarmRepoContextSummaries(input);
-    return res.json({ ok: true, type: "ai.chat.generate", ...out });
-  } catch (e) {
-    return res.status(500).json({
-      ok: false,
-      error: {
-        code: "PREWARM_FAILED",
-        message: String(e?.message || e)
-      }
-    });
-  }
 });
 
 app.get("/v1/ui-prefs", auth, (req, res) => {

@@ -1,5 +1,7 @@
 const fs = require("fs");
 const path = require("path");
+const { isPathInside, validateWorkspacePathOrBadRequest } = require("../lib/pathUtils");
+const { decodeBase64Payload } = require("../lib/codec");
 
 module.exports = function registerWorkspaceRoutes(app, deps) {
   const {
@@ -11,12 +13,7 @@ module.exports = function registerWorkspaceRoutes(app, deps) {
     workspaceFileWriteMaxBytes
   } = deps;
 
-  // Helper functions
-  function isPathInside(parent, candidate) {
-    const rel = path.relative(parent, candidate);
-    return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
-  }
-
+  // Helper functions (workspace-specific)
   function formatWorkspaceEntry(baseDir, dirent) {
     const abs = path.join(baseDir, dirent.name);
     let st = null;
@@ -50,30 +47,6 @@ module.exports = function registerWorkspaceRoutes(app, deps) {
       if (buffer[i] === 0) return true;
     }
     return false;
-  }
-
-  function decodeBase64Payload(raw) {
-    const s = String(raw || "").trim();
-    if (!s) throw new Error("Empty base64 payload");
-    try {
-      return Buffer.from(s, "base64");
-    } catch (e) {
-      throw new Error("Invalid base64 payload");
-    }
-  }
-
-  function validateWorkspacePathOrBadRequest(res, rawPath, fieldName = "path") {
-    const p = String(rawPath || "").trim();
-    if (!p) {
-      badRequest(res, "VALIDATION_ERROR", `Missing '${fieldName}'.`);
-      return null;
-    }
-    const abs = path.resolve(workspaceRoot, p);
-    if (!isPathInside(workspaceRoot, abs)) {
-      badRequest(res, "VALIDATION_ERROR", `Requested ${fieldName} escapes workspace root.`);
-      return null;
-    }
-    return { rel: p, abs };
   }
 
   // GET /v1/workspace/files
@@ -303,7 +276,7 @@ module.exports = function registerWorkspaceRoutes(app, deps) {
   // POST /v1/workspace/create
   app.post("/v1/workspace/create", auth, (req, res) => {
     const body = req.body ?? {};
-    const requestedPath = validateWorkspacePathOrBadRequest(res, body.path, "path");
+    const requestedPath = validateWorkspacePathOrBadRequest({ res, rawPath: body.path, workspaceRoot, badRequest, fieldName: "path" });
     if (!requestedPath) return;
 
     const kindRaw = String(body.kind || "file").trim().toLowerCase();
@@ -419,9 +392,9 @@ module.exports = function registerWorkspaceRoutes(app, deps) {
   // PATCH /v1/workspace/move
   app.patch("/v1/workspace/move", auth, (req, res) => {
     const body = req.body ?? {};
-    const fromPath = validateWorkspacePathOrBadRequest(res, body.from_path, "from_path");
+    const fromPath = validateWorkspacePathOrBadRequest({ res, rawPath: body.from_path, workspaceRoot, badRequest, fieldName: "from_path" });
     if (!fromPath) return;
-    const toPath = validateWorkspacePathOrBadRequest(res, body.to_path, "to_path");
+    const toPath = validateWorkspacePathOrBadRequest({ res, rawPath: body.to_path, workspaceRoot, badRequest, fieldName: "to_path" });
     if (!toPath) return;
 
     const overwrite = body.overwrite === true;
