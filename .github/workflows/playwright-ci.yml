@@ -9,8 +9,8 @@ concurrency:
   group: playwright-${{ github.ref }}
   cancel-in-progress: true
 env:
-  API_BASE_URL: ${{ secrets.API_BASE_URL }}
-  X_API_KEY: ${{ secrets.X_API_KEY }}
+  # CI runs in mock mode by default (no backend required)
+  VITE_LOGS_SOURCE: mock
 jobs:
   e2e:
     runs-on: ubuntu-latest
@@ -26,20 +26,32 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: ui-v2/package-lock.json
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-pw-${{ hashFiles('ui-v2/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-pw-
 
       - name: Install deps
         run: npm ci
 
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps
+        run: npx playwright install --with-deps chromium
+
+      - name: Build UI
+        run: npm run build
 
       - name: Run Playwright
         run: npx playwright test
         env:
           CI: "true"
+          PW_LITE: "1"
 
       - name: Upload Playwright HTML report
         if: always()
@@ -48,6 +60,7 @@ jobs:
           name: playwright-report
           path: ui-v2/playwright-report
           retention-days: 30
+          if-no-files-found: ignore
 
       - name: Upload test artifacts (traces/videos/screenshots)
         if: always()
