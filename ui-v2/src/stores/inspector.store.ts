@@ -8,6 +8,7 @@ export type InspectorSelectionType =
   | 'Task'
   | 'MemoryEntry'
   | 'LogRun'
+  | 'LogLine'
   | 'RepoOperation'
 
 export interface InspectorSelection {
@@ -81,6 +82,15 @@ export const useInspectorStore = defineStore('inspector', () => {
     })
   }
 
+  function selectLogLine(lineId: string, projectId?: string, data?: Record<string, unknown>) {
+    select({
+      type: 'LogLine',
+      id: lineId,
+      projectId,
+      data,
+    })
+  }
+
   function clear() {
     selection.value = null
     loading.value = false
@@ -134,6 +144,7 @@ export const useInspectorStore = defineStore('inspector', () => {
     selectTask,
     selectMemoryEntry,
     selectLogRun,
+    selectLogLine,
     clear,
     close,
     openDrawer,

@@ -90,7 +90,10 @@ async function copyLink(artifact: Artifact) {
       >
         <div class="artifact-icon">{{ getKindIcon(artifact.kind) }}</div>
         <div class="artifact-info">
-          <div class="artifact-name">{{ artifact.name }}</div>
+          <div class="artifact-name-row">
+            <div class="artifact-name">{{ artifact.name }}</div>
+            <span class="artifact-kind-badge">{{ artifact.kind }}</span>
+          </div>
           <div class="artifact-meta">
             {{ formatSize(artifact.sizeBytes) }} · {{ artifact.contentType }}
           </div>
@@ -98,12 +101,13 @@ async function copyLink(artifact: Artifact) {
         </div>
         <div class="artifact-actions">
           <a
-            v-if="artifact.href"
-            :href="artifact.href"
+            :href="artifact.href || '#'"
+            :disabled="!artifact.href"
             class="artifact-btn artifact-btn--open"
+            :class="{ 'artifact-btn--disabled': !artifact.href }"
             :data-testid="`artifact-open-${artifact.id}`"
-            target="_blank"
-            rel="noopener"
+            :target="artifact.href ? '_blank' : undefined"
+            :rel="artifact.href ? 'noopener' : undefined"
           >
             Open
           </a>
@@ -163,12 +167,33 @@ async function copyLink(artifact: Artifact) {
   min-width: 0;
 }
 
+.artifact-name-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+  margin-bottom: 2px;
+}
+
 .artifact-name {
   font-size: var(--text-sm);
   color: var(--text-0);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.artifact-kind-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background-color: var(--bg-2);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .artifact-meta {
@@ -199,13 +224,25 @@ async function copyLink(artifact: Artifact) {
   text-decoration: none;
 }
 
-.artifact-btn:hover {
+.artifact-btn:hover:not(.artifact-btn--disabled) {
   background-color: var(--accent);
   color: white;
 }
 
 .artifact-btn--open {
   text-decoration: none;
+}
+
+.artifact-btn--disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background-color: var(--bg-2);
+  color: var(--text-2);
+}
+
+.artifact-btn--disabled:hover {
+  background-color: var(--bg-2);
+  color: var(--text-2);
 }
 
 .artifact-btn--copy {

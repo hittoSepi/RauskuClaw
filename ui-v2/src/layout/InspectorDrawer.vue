@@ -16,6 +16,7 @@ const typeLabels: Record<InspectorSelectionType, string> = {
   Task: 'Task',
   MemoryEntry: 'Memory Entry',
   LogRun: 'Log Run',
+  LogLine: 'Log Line',
   RepoOperation: 'Repo Operation',
 }
 
@@ -39,6 +40,7 @@ function getIconForType(type: InspectorSelectionType | null): string {
     case 'Task': return '✅'
     case 'MemoryEntry': return '🧠'
     case 'LogRun': return '📋'
+    case 'LogLine': return '📄'
     case 'RepoOperation': return '📦'
     default: return '📄'
   }

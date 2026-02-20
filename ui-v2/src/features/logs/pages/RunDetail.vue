@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { useLogsStore, type LogLevel } from '@/stores/logs.store'
+import { useLogsStore, type LogLevel, type LogLine } from '@/stores/logs.store'
+import { useInspectorStore } from '@/stores/inspector.store'
 import LogViewer from '../components/LogViewer.vue'
 import ArtifactList from '../components/ArtifactList.vue'
 
 const route = useRoute()
 const logsStore = useLogsStore()
+const inspectorStore = useInspectorStore()
 
 const runId = computed(() => route.params.runId as string)
 const selectedRun = computed(() => logsStore.selectedRun)
@@ -51,6 +53,22 @@ function handleStreamChange(stream: 'stdout' | 'stderr' | 'all') {
 // Handle load more
 function handleLoadMore() {
   logsStore.loadMoreLogs(runId.value)
+}
+
+// Handle log line selection
+function handleSelectLogLine(line: LogLine, index: number) {
+  logsStore.selectLogLine(line, index)
+  inspectorStore.selectLogLine(
+    `${runId.value}-line-${index}`,
+    selectedRun.value?.projectId,
+    {
+      timestamp: line.ts,
+      level: line.level,
+      message: line.message,
+      stream: line.stream,
+      index,
+    }
+  )
 }
 
 function formatDuration(ms?: number): string {
@@ -181,6 +199,7 @@ function getStatusColor(status: string): string {
               :loading="isLoadingLogs"
               :has-more="hasMoreLogs"
               @load-more="handleLoadMore"
+              @select-line="handleSelectLogLine"
             />
           </div>
         </section>

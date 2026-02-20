@@ -200,6 +200,10 @@ export const useLogsStore = defineStore('logs', () => {
   const logStreamFilter = ref<'stdout' | 'stderr' | 'all'>('all')
   const logQuery = ref('')
 
+  // State: selected log line (for inspector panel)
+  const selectedLogLine = ref<LogLine | null>(null)
+  const selectedLogLineIndex = ref<number | null>(null)
+
   // Computed: runs list filtering
   const filteredRuns = computed(() => {
     if (filterStatus.value === 'all') return runs.value
@@ -333,6 +337,17 @@ export const useLogsStore = defineStore('logs', () => {
     }
   }
 
+  // Actions: log line selection (for inspector)
+  function selectLogLine(line: LogLine, index: number) {
+    selectedLogLine.value = line
+    selectedLogLineIndex.value = index
+  }
+
+  function clearSelectedLogLine() {
+    selectedLogLine.value = null
+    selectedLogLineIndex.value = null
+  }
+
   return {
     // State: runs list
     runs,
@@ -352,6 +367,8 @@ export const useLogsStore = defineStore('logs', () => {
     logLevelFilter,
     logStreamFilter,
     logQuery,
+    selectedLogLine,
+    selectedLogLineIndex,
 
     // Computed: runs list
     filteredRuns,
@@ -375,5 +392,7 @@ export const useLogsStore = defineStore('logs', () => {
     resetLogs,
     loadMoreLogs,
     setLogFilters,
+    selectLogLine,
+    clearSelectedLogLine,
   }
 })

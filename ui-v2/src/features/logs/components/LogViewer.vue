@@ -15,6 +15,7 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<{
   loadMore: []
+  selectLine: [line: LogLine, index: number]
 }>()
 
 // Refs
@@ -126,6 +127,11 @@ function handleLoadMore() {
   emit('loadMore')
 }
 
+// Handle log line selection
+function handleLogLineClick(line: LogLine, index: number) {
+  emit('selectLine', line, index)
+}
+
 // Lifecycle
 onMounted(() => {
   if (logLinesRef.value) {
@@ -162,14 +168,32 @@ onUnmounted(() => {
           <span class="log-viewer-count">{{ logs.length }} lines</span>
           <span v-if="hasMore" class="log-viewer-more"> (more available)</span>
         </div>
-        <button
-          class="follow-toggle"
-          :class="{ 'follow-toggle--active': followTail }"
-          @click="toggleFollowTail"
-        >
-          <span class="follow-toggle-icon">{{ followTail ? '🔗' : '🔓' }}</span>
-          Follow tail
-        </button>
+        <div class="log-viewer-actions">
+          <button
+            v-if="hasMore"
+            class="toolbar-btn"
+            :disabled="loading"
+            @click="handleLoadMore"
+            data-testid="load-older-btn"
+          >
+            {{ loading ? 'Loading...' : 'Load older' }}
+          </button>
+          <button
+            class="follow-toggle"
+            :class="{ 'follow-toggle--active': followTail }"
+            @click="toggleFollowTail"
+          >
+            <span class="follow-toggle-icon">{{ followTail ? '🔗' : '🔓' }}</span>
+            Follow tail
+          </button>
+          <button
+            class="toolbar-btn"
+            @click="scrollToBottom"
+            data-testid="jump-to-bottom-btn"
+          >
+            Jump to bottom ⬇
+          </button>
+        </div>
       </div>
 
       <!-- Log lines container with windowed rendering -->
@@ -193,6 +217,7 @@ onUnmounted(() => {
           :data-level="log.level"
           :data-index="actualIndex"
           :data-testid="`log-line-${actualIndex}`"
+          @click="handleLogLineClick(log, actualIndex)"
         >
           <span class="log-time">{{ formatTime(log.ts) }}</span>
           <span
@@ -215,17 +240,6 @@ onUnmounted(() => {
           <div class="spinner spinner--small"></div>
           <span>Loading more...</span>
         </div>
-      </div>
-
-      <!-- Load more button (when not following and has more) -->
-      <div v-if="hasMore && !followTail" class="log-viewer-load-more">
-        <button
-          class="load-more-btn"
-          :disabled="loading"
-          @click="handleLoadMore"
-        >
-          {{ loading ? 'Loading...' : 'Load more logs' }}
-        </button>
       </div>
     </template>
   </div>
@@ -306,6 +320,33 @@ onUnmounted(() => {
   color: var(--accent);
 }
 
+.log-viewer-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.toolbar-btn {
+  padding: 4px var(--s-2);
+  border: 1px solid var(--border-0);
+  border-radius: var(--r-sm);
+  background-color: var(--bg-2);
+  color: var(--text-1);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+.toolbar-btn:hover:not(:disabled) {
+  background-color: var(--accent);
+  color: white;
+}
+
+.toolbar-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .follow-toggle {
   display: flex;
   align-items: center;
@@ -356,6 +397,12 @@ onUnmounted(() => {
   padding: 2px var(--s-1);
   border-radius: 4px;
   min-height: 25px;
+  cursor: pointer;
+  transition: background-color 150ms ease;
+}
+
+.log-line:hover {
+  background-color: var(--bg-2);
 }
 
 .log-time {
@@ -381,33 +428,5 @@ onUnmounted(() => {
   padding: var(--s-2);
   color: var(--text-2);
   font-size: var(--text-sm);
-}
-
-.log-viewer-load-more {
-  padding: var(--s-2) var(--s-3);
-  border-top: 1px solid var(--border-0);
-  background-color: var(--bg-1);
-}
-
-.load-more-btn {
-  width: 100%;
-  padding: var(--s-2);
-  border: 1px solid var(--border-0);
-  border-radius: var(--r-sm);
-  background-color: var(--bg-2);
-  color: var(--text-0);
-  font-size: var(--text-sm);
-  cursor: pointer;
-  transition: background-color 150ms ease;
-}
-
-.load-more-btn:hover:not(:disabled) {
-  background-color: var(--accent);
-  color: white;
-}
-
-.load-more-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
 }
 </style>
