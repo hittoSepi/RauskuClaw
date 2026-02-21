@@ -13,6 +13,7 @@
     "milestone:complete:dry": "node scripts/milestone.mjs complete --dry-run",
     "milestone:complete:dry:commit": "node scripts/milestone.mjs complete --dry-run --commit",
     "milestone:complete:dry:push": "node scripts/milestone.mjs complete --dry-run --commit --push",
+    "milestone:commit": "node scripts/milestone.mjs log --commit",
     "milestone:complete:commit": "node scripts/milestone.mjs complete --commit",
     "milestone:complete:push": "node scripts/milestone.mjs complete --commit --push"
   },

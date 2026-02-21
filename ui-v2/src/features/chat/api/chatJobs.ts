@@ -185,7 +185,7 @@ function unwrapJob(response: unknown): BackendJob {
 
   // Treat response as direct job object (must have id)
   if (typeof resp.id === 'string') {
-    return resp as BackendJob
+    return resp as unknown as BackendJob
   }
 
   throw new Error('Cannot extract job from response')

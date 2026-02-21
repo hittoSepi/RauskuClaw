@@ -30,6 +30,7 @@ milestones:
       - Build passes
     commits:
       - 14d02f6
+      - 08fefba
   - id: 25
     title: Chat streaming (SSE)
     status: current
@@ -40,11 +41,11 @@ milestones:
       - Stable Playwright (mock SSE or skip in lite)
     commits:
       - 49bdbad
+      - d34edb8
   - id: 26
     title: Chat threads v2 (server-ready)
-    status: next
+    status: planned
     commits: []
-
   - id: 27
     title: Inspector Drawer v1
     status: unplanned
