@@ -2,23 +2,21 @@
 
 **UPDATE THIS DOCUMENT AS WE GO!**
 
-**Current:** Milestone 24 — Project Chat (proper v1)
+**Current:** Milestone 25 — Chat streaming (SSE)
 
 ### Goals
-- Jobs-backed chat in /projects/:projectId/chat
-- Poll /v1/jobs/:id until terminal
-- Persist thread per project (localStorage)
+- Show assistant output live while job runs
 
 ### DoD
-- Pending/failed states + retry
-- Deterministic Playwright test with mocked jobs
-- Build passes
+- Falls back to polling
+- Stable Playwright (mock SSE or skip in lite)
 
 ## Next
 
-- (empty)
+- Milestone 26 — Chat threads v2 (server-ready)
 
 ## Done
 
+- Milestone 24 — Project Chat (proper v1)
 - Milestone 23 — E2E/CI hardening backend-free for smoke tests
 - Milestone 22 — MegaCommit 17-22

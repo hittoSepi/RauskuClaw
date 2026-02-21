@@ -67,9 +67,22 @@ function completeFromYaml(data) {
 
   const next =
     ms
-      .filter((m) => m.status === "next")
+      .filter((m) => m.id > curr.id && m.status !== "done" && m.status !== "dropped")
       .sort((a, b) => a.id - b.id)[0] || null;
+
   if (next) next.status = "current";
+
+  // merkkaa myös seuraava “next”:ksi (pelkkä label UI:lle / plannerille)
+  const afterNext =
+    next
+      ? ms
+          .filter((m) => m.id > next.id && m.status !== "done" && m.status !== "dropped")
+          .sort((a, b) => a.id - b.id)[0] || null
+      : null;
+
+  if (afterNext && afterNext.status !== "current") afterNext.status = "next";
+
+if (next) data.current = next.id;
 
   return { completed: curr, promoted: next };
 }
