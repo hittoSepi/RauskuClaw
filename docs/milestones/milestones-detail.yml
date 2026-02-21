@@ -1,0 +1,38 @@
+# docs/milestones-detail.yml
+#
+# Purpose:
+# - Optional long-form details per milestone (human-friendly but machine-parsable).
+# - Keep this lightweight: overview + a short tasks list.
+#
+# status ∈ {done,current,next,review,blocked,planned,unplanned,paused,dropped}
+#
+milestones:
+  - id: 23
+    overview: |
+      Lock down E2E/CI so smoke is truly backend-free.
+      Default whoami 401, fail-fast /v1/** unless explicitly mocked.
+    tasks:
+      - id: 23.1
+        title: Verify smoke routing locally (PW_LITE)
+        status: current
+      - id: 23.2
+        title: Validate CI workflow config (Node 22, chromium-only, build before e2e)
+        status: next
+      - id: 23.3
+        title: milestone.mjs dry-run/commit guard verified
+        status: planned
+
+  - id: 24
+    overview: |
+      Implement Project Chat v1 using Jobs API (POST /v1/jobs + GET /v1/jobs/:id).
+      Must be testable without backend using Playwright route mocks.
+    tasks:
+      - id: 24.1
+        title: Discover chat job contract (JOB_TYPE + input/result shapes)
+        status: planned
+      - id: 24.2
+        title: Implement chatApi.ts + tolerant parseAssistantText()
+        status: planned
+      - id: 24.3
+        title: Add deterministic Playwright chat test (mock jobs)
+        status: unplanned

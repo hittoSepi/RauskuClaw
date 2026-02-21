@@ -1,0 +1,51 @@
+current: 23
+milestones:
+  - id: 22
+    title: MegaCommit 17-22
+    status: done
+    notes:
+      - MegaCommit from 17-22 and fixes
+    commits:
+      - 080711f
+      - 11c31de
+      - cb552aa
+  - id: 23
+    title: E2E/CI hardening backend-free for smoke tests
+    status: done
+    notes:
+      - Node 22 + cache ms-playwright + chromium-only
+      - Backend-free smoke: fail-fast /v1/**, whoami default 401
+    commits:
+      - 080711f
+  - id: 24
+    title: Project Chat (proper v1)
+    status: current
+    goals:
+      - Jobs-backed chat in /projects/:projectId/chat
+      - Poll /v1/jobs/:id until terminal
+      - Persist thread per project (localStorage)
+    dod:
+      - Pending/failed states + retry
+      - Deterministic Playwright test with mocked jobs
+      - Build passes
+    commits:
+      - 080711f
+  - id: 25
+    title: Chat streaming (SSE)
+    status: planned
+    goals:
+      - Show assistant output live while job runs
+    dod:
+      - Falls back to polling
+      - Stable Playwright (mock SSE or skip in lite)
+    commits: []
+  - id: 26
+    title: Chat threads v2 (server-ready)
+    status: planned
+    commits: []
+  - id: 27
+    title: Inspector Drawer v1
+    status: unplanned
+    notes:
+      - Nice-to-have, depends on how ugly the UI gets
+    commits: []

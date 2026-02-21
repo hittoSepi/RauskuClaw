@@ -1,0 +1,50 @@
+# docs/planner/projects/rauskuclaw-ui.yml
+#
+# status ∈ {done,current,next,review,blocked,planned,unplanned,paused,dropped}
+#
+project:
+  id: rauskuclaw-ui
+  title: RauskuClaw UI v2
+
+items:
+  - id: M23
+    type: milestone
+    title: E2E/CI hardening backend-free
+    status: done
+    commits:
+      - 11c31de
+      - 76c2d9a
+    summary: |
+      Hardened Playwright CI and ensured smoke tests are backend-free by default.
+
+  - id: M24
+    type: milestone
+    title: Project Chat (proper v1)
+    status: current
+    estimate: 1d
+    notes:
+      - Jobs API only (POST /v1/jobs + GET /v1/jobs/:id)
+      - Must remain backend-free in Playwright via route mocks
+
+  - id: T24.1
+    type: task
+    title: Discover chat job contract (JOB_TYPE + input/result)
+    status: next
+    estimate: 30m
+    links:
+      - docs/chat-job-contract.md
+
+  - id: T24.5
+    type: task
+    title: Playwright deterministic chat test (mock POST/GET jobs)
+    status: review
+    estimate: 45m
+    notes:
+      - Waiting for CI green on PR
+
+  - id: T24.3
+    type: task
+    title: chat.store.ts polling + abort + timeout cap
+    status: blocked
+    notes:
+      - Need confirmed job result schema from backend

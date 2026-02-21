@@ -1,0 +1,21 @@
+# docs/planner/index.yml
+#
+# Purpose:
+# - Small stable index of projects for the planner.
+# - Each project points to a separate spec file to keep merges sane.
+#
+projects:
+  - id: rauskuclaw-ui
+    title: RauskuClaw UI v2
+    spec: docs/planner/projects/rauskuclaw-ui.yml meta:
+    repo:
+      url: https://github.com/hittoSepi/RauskuClaw
+      path: /opt/openclaw
+      branch: main
+    workdir:
+      path: /opt/openclaw/ui-v2
+    links:
+      - title: CI (Playwright)
+        url: https://github.com/hittoSepi/RauskuClaw/actions
+      - title: Milestones
+        path: docs/milestones.yml

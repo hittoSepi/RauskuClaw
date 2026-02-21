@@ -8,7 +8,13 @@
     "rauskuclaw": "./bin/rauskuclaw.js"
   },
   "scripts": {
-    "test": "node --test cli/test/*.test.js"
+    "test": "node --test cli/test/*.test.js",
+    "docs:gen": "node scripts/docs-gen.mjs",
+    "milestone:complete:dry": "node scripts/milestone.mjs complete --dry-run",
+    "milestone:complete:dry:commit": "node scripts/milestone.mjs complete --dry-run --commit",
+    "milestone:complete:dry:push": "node scripts/milestone.mjs complete --dry-run --commit --push",
+    "milestone:complete:commit": "node scripts/milestone.mjs complete --commit",
+    "milestone:complete:push": "node scripts/milestone.mjs complete --commit --push"
   },
   "engines": {
     "node": ">=18"
@@ -17,5 +23,8 @@
     "@z_ai/mcp-server": "^0.1.2",
     "ink": "^6.7.0",
     "react": "^19.2.4"
+  },
+  "devDependencies": {
+    "yaml": "^2.8.2"
   }
 }
