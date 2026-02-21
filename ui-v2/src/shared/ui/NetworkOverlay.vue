@@ -38,24 +38,28 @@ const visible = computed(() => !isOnline.value)
 </template>
 
 <style scoped>
+
 .network-overlay {
   position: fixed;
   inset: 0;
   display: grid;
   place-items: center;
   justify-items: center;
-  z-index: 9999;
+  z-index: 9998;
   pointer-events: none;
+  backdrop-filter: blur(4px);
 }
 
 .network-overlay-backdrop {
   position: absolute;
   inset: 0;
   background-color: rgba(11, 15, 20, 0.75);
+  transition: opacity 200ms ease;
   /* Using --bg-0 (#0B0F14) with 75% opacity */
 }
 
 .network-overlay-card {
+  z-index: 9999;
   display: flex;
   align-items: center;
   gap: var(--s-3);
@@ -65,31 +69,33 @@ const visible = computed(() => !isOnline.value)
   border-radius: var(--r-lg);
   padding: var(--s-3) var(--s-4);
   box-shadow: var(--shadow-1);
-  max-width: min(520px, calc(100vw - 2 * var(--s-3)));
+  width: min(520px, calc(100vw - 2 * var(--s-3)));
   pointer-events: auto;
 
   /* Danger accent bar on left */
   border-left: 4px solid var(--danger);
+  transition: transform 200ms ease, opacity 200ms ease;
 }
 
 .network-overlay-badge {
   position: relative;
-  width: 80px;
-  height: 80px;
+  width: 120px;
+  height: 120px;
   display: grid;
   place-items: center;
   border-radius: var(--r-lg);
-  background: var(--bg-1);
+ /* background: var(--bg-1);
   border: 1px solid var(--border-0);
-  box-shadow: var(--shadow-1);
+  box-shadow: var(--shadow-1); */
   flex: 0 0 auto;
 }
 
 .network-overlay-warn {
-  font-size: 64px;
+
+  font-size: 120px;
   line-height: 1;
   color: var(--danger);
-  transform: translateY(2px);
+  transform: translateY(-6px);
 }
 
 .network-overlay-sat {
@@ -97,7 +103,7 @@ const visible = computed(() => !isOnline.value)
   inset: 0;
   display: grid;
   place-items: center;
-  font-size: 22px;
+  font-size: 60px;
   line-height: 1;
   transform: translateY(2px);
 }
@@ -108,13 +114,13 @@ const visible = computed(() => !isOnline.value)
 
 .network-overlay-title {
   font-weight: 800;
-  font-size: 22px;
+  font-size: 32px;
   color: var(--danger);
   margin-bottom: 2px;
 }
 
 .network-overlay-text {
-  font-size: 17px;
-  color: var(--text-0);
+  font-size: 22px;
+  color: var(--text-2);
 }
 </style>
