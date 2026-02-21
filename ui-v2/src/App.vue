@@ -3,6 +3,7 @@ import { onMounted } from 'vue'
 import AppShell from './layout/AppShell.vue'
 import Toast from './shared/ui/Toast.vue'
 import ApiKeyGate from './components/ApiKeyGate.vue'
+import NetworkOverlay from './shared/ui/NetworkOverlay.vue'
 import { useAuthStore } from './stores/auth.store'
 
 const authStore = useAuthStore()
@@ -19,9 +20,10 @@ onMounted(() => {
     <div class="bootstrap-spinner"></div>
     <span class="bootstrap-text">Loading...</span>
   </div>
-  
+
   <!-- Main app after bootstrap -->
   <template v-else>
+    <NetworkOverlay />
     <ApiKeyGate />
     <AppShell />
     <Toast />

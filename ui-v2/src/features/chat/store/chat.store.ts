@@ -162,10 +162,10 @@ export const useChatStore = defineStore('chat', () => {
       const assistantMessage: ChatMessage = {
         id: generateMessageId(),
         role: 'assistant',
-        content: 'Offline: unable to connect.',
+        content: 'No network connection.',
         createdAt: new Date().toISOString(),
         status: 'error',
-        error: 'Network offline',
+        error: 'offline',
       }
       projects.value[projectId]!.messages.push(userMessage, assistantMessage)
       persist()
