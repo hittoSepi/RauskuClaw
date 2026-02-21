@@ -9,6 +9,9 @@ const {
   buildWorkingMemoryContext
 } = require("../memory/working_memory");
 
+const { holviHttp } = require("../lib/holviClient");
+
+const OPENAI_ALIAS = process.env.HOLVI_OPENAI_ALIAS || "sec://openai_api_key";
 const SUMMARY_CACHE_MAX = 128;
 const summaryCache = new Map();
 
@@ -410,35 +413,35 @@ function withAgentsMdSystemMessage(messages, options = {}, repoContext = null, s
   const parts = [];
   if (agentsMd) {
     parts.push("Repository policy from AGENTS.md (follow these instructions):");
-    parts.push(agentsMd.slice(0, 12000));
+  //  parts.push(agentsMd.slice(0, 12000));
   }
   if (identityMd) {
     parts.push("Project identity from IDENTITY.md:");
-    parts.push(summarizeMarkdownCached(identityMd, 1600).slice(0, 6000));
+  //  parts.push(summarizeMarkdownCached(identityMd, 1600).slice(0, 6000));
   }
   if (soulMd) {
     parts.push("Project soul from SOUL.md:");
-    parts.push(summarizeMarkdownCached(soulMd, 1600).slice(0, 6000));
+//    parts.push(summarizeMarkdownCached(soulMd, 1600).slice(0, 6000));
   }
   if (userMd) {
     parts.push("User profile and preferences from USER.md:");
-    parts.push(userMd.slice(0, 6000));
+  //  parts.push(userMd.slice(0, 6000));
   }
   if (toolsReadme) {
     parts.push("Tool directory index from workspace/tools/README.md:");
-    parts.push(toolsReadme.slice(0, 8000));
+ //   parts.push(toolsReadme.slice(0, 8000));
   }
   if (memoryMd) {
     parts.push("Working memory from rauskuAssets/MEMORY.md (important long-lived notes):");
-    parts.push(memoryMd.slice(0, 8000));
+  //  parts.push(memoryMd.slice(0, 8000));
   }
   if (workflowsYaml) {
     parts.push("Workflow catalog from workspace/workflows/workflows.yaml:");
-    parts.push(workflowsYaml.slice(0, 12000));
+  // parts.push(workflowsYaml.slice(0, 12000));
   }
   if (workflowToolMd) {
     parts.push("Workflow execution contract from workspace/tools/workflow.run/TOOL.md:");
-    parts.push(workflowToolMd.slice(0, 6000));
+   //parts.push(workflowToolMd.slice(0, 6000));
   }
   const content = parts.join("\n\n");
   return [{ role: "system", content }, ...messages];

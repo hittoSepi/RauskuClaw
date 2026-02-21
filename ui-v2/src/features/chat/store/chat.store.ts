@@ -278,7 +278,8 @@ export const useChatStore = defineStore('chat', () => {
       }
 
       // Try streaming first, fall back to polling on error
-      // Use a flag to track if we should poll instead
+      // Track if we received at least one job_update to preserve 'streaming' status on fallback
+      let receivedJobUpdate = false
       let shouldPollInstead = false
       const authStore = useAuthStore()
       const apiKey = authStore.getApiKey()
@@ -292,6 +293,9 @@ export const useChatStore = defineStore('chat', () => {
 
             const currentMsg = projects.value[projectId]!.messages[msgIndex]
             if (!currentMsg) return
+
+            // Mark that we received at least one update (for better UX on fallback)
+            receivedJobUpdate = true
 
             // Extract text from result
             const assistantText = chatJobs.parseAssistantText(job.result)
@@ -320,13 +324,14 @@ export const useChatStore = defineStore('chat', () => {
               activeStreams.delete(projectId)
             }
 
-            // Update status to pending
+            // Keep 'streaming' status if we received at least one update, otherwise 'pending'
+            // This prevents UI flicker (caret → dots) when stream fails after partial content
             if (msgIndex !== -1) {
               const currentMsg = projects.value[projectId]!.messages[msgIndex]
               if (currentMsg) {
                 projects.value[projectId]!.messages[msgIndex] = {
                   ...currentMsg,
-                  status: 'pending',
+                  status: receivedJobUpdate ? 'streaming' : 'pending',
                 }
                 throttledPersist(true)
               }

@@ -262,13 +262,27 @@ ui-v2/src/
 
 ### Implementation Milestones
 
-- **M0: Skeleton** - AppShell + routing + default project (DONE - basic structure exists)
-- **M1: Chat MVP** - Timeline, markdown, tool blocks, inspector (IN PROGRESS)
+- **M0: Skeleton** - AppShell + routing + default project (DONE)
+- **M1: Chat MVP** - Timeline, markdown, tool blocks, inspector (DONE - with streaming, see MS25)
 - **M2: Logs MVP** - Run list + viewer + linking
 - **M3: Tasks MVP** - Board/list + create from selection + detail modal
 - **M4: Memory MVP** - List + editor + pin workflow
 - **M5: Repo + Workdir** - Connect/pull + branch selector + file viewer
 - **M6: Polish + Dev mode** - Command palette, shortcuts, advanced panels
+
+### Completed Enhancements
+
+- **MS25: Chat Streaming** - SSE streaming with polling fallback
+  - Native EventSource API with api_key query parameter auth
+  - First-event timeout (3s default) with configurable SendOptions.streamFirstEventTimeout
+  - Graceful fallback to polling on stream failure
+  - Smart status preservation: 'streaming' if job_update received, otherwise 'pending'
+  - Throttled localStorage persist (250ms) during streaming
+  - Streaming caret animation (▍) in ChatTimeline
+  - Optimized auto-scroll: watches message count + last content length
+  - Stream cleanup on navigation (cancelActiveStream/cancelAllStreams)
+  - Security: no URL logging with api_key, sanitized error messages
+  - E2E tests: 13/13 passed (chat-stream.spec.ts + chat.spec.ts + smoke.spec.ts)
 
 ### UI Development Commands
 

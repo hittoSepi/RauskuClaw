@@ -194,6 +194,19 @@ Exit Criteria:
 - Contributor can reproduce milestone outcomes locally.
 
 ## Changelog
+- 2026-02-21:
+  - **Milestone 25 (UI v2 Chat Streaming)**: SSE streaming integration for chat UI with polling fallback
+    - Added `streamJob()` function in `ui-v2/src/features/chat/api/chatJobs.ts` using native EventSource API
+    - Integrated streaming in chat store with graceful fallback to polling on stream failure
+    - Added 'streaming' status to MessageStatus type with visual caret animation in ChatTimeline
+    - Implemented throttled localStorage persist (250ms) during streaming to prevent UI blocking
+    - Added stream cleanup on navigation (cancelActiveStream/cancelAllStreams)
+    - First-event timeout (3s default, configurable via SendOptions.streamFirstEventTimeout)
+    - Smart status preservation on fallback: keeps 'streaming' if at least one job_update received, otherwise 'pending'
+    - Security: no URL logging with api_key query parameter, sanitized error messages
+    - Optimized auto-scroll: watches message count + last content length (no deep watch)
+    - E2E tests: 3/3 passed (fallback, timeout, status transitions)
+    - All 13 E2E tests passing (chat-stream.spec.ts + chat.spec.ts + smoke.spec.ts)
 - 2026-02-18:
   - MEMORY/context strategy update:
     - repo-context summarization narrowed to `IDENTITY.md` and `SOUL.md` only.
