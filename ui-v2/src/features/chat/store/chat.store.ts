@@ -8,13 +8,14 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import * as chatJobs from '../api/chatJobs'
+import { useAuthStore } from '@/stores/auth.store'
 
 // ============================================
 // Type Definitions
 // ============================================
 
 export type MessageRole = 'user' | 'assistant' | 'system'
-export type MessageStatus = 'pending' | 'success' | 'error'
+export type MessageStatus = 'pending' | 'streaming' | 'success' | 'error'
 
 export interface ChatMessage {
   id: string
@@ -43,6 +44,8 @@ export interface SendOptions {
   pollTimeoutMs?: number
   /** Optional job type override */
   jobType?: 'codex.chat.generate' | 'ai.chat.generate'
+  /** Stream first-event timeout in milliseconds (default: 3000ms) */
+  streamFirstEventTimeout?: number
 }
 
 // ============================================
@@ -50,6 +53,14 @@ export interface SendOptions {
 // ============================================
 
 const STORAGE_KEY = 'oc_chat_v1'
+
+// ============================================
+// Stream Tracking (outside store, not reactive)
+// ============================================
+
+// Track active streams per project for cleanup
+// Use plain Map instead of ref to avoid unexpected Vue reactivity
+const activeStreams = new Map<string, chatJobs.StreamJobHandle>()
 
 // ============================================
 // Helper Functions
@@ -78,6 +89,29 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string = `Oper
       setTimeout(() => reject(new Error(message)), ms)
     ),
   ])
+}
+
+/**
+ * Create a throttled localStorage persist function
+ * Prevents excessive writes during rapid streaming updates
+ */
+function createThrottledPersist(persistFn: () => void) {
+  let timer: ReturnType<typeof setTimeout> | null = null
+
+  return function throttledPersist(immediate = false) {
+    if (timer) clearTimeout(timer)
+
+    if (immediate) {
+      persistFn()
+      timer = null // Clear timer ref after immediate persist
+      return
+    }
+
+    timer = setTimeout(() => {
+      persistFn()
+      timer = null // Clear timer ref after persist
+    }, 250)
+  }
 }
 
 // ============================================
@@ -221,63 +255,172 @@ export const useChatStore = defineStore('chat', () => {
       assistantMessage.jobId = jobId
       persist()
 
-      // Poll job until complete with timeout guarantee
-      const pollTimeoutMs = options.pollTimeoutMs ?? 65000
-      const job = await withTimeout(
-        chatJobs.pollJobUntilComplete(jobId, {
-          interval: options.pollInterval ?? 1000,
-          maxAttempts: options.maxPollAttempts ?? 60,
-        }),
-        pollTimeoutMs,
-        `Chat request timed out after ${pollTimeoutMs}ms`
+      // Track message index for updates
+      const msgIndex = projects.value[projectId]!.messages.findIndex(
+        (m) => m.id === assistantMessage.id
       )
 
-      // Handle terminal states
-      if (job.status === 'succeeded') {
-        // Parse assistant text from result
-        const assistantText = chatJobs.parseAssistantText(job.result)
-        // Update the message in the array to ensure Vue reactivity
-        const msgIndex = projects.value[projectId]!.messages.findIndex(
-          (m) => m.id === assistantMessage.id
-        )
-        if (msgIndex !== -1) {
-          projects.value[projectId]!.messages[msgIndex] = {
-            ...assistantMessage,
-            content: assistantText,
-            status: 'success',
-          }
+      // Throttled persist for streaming updates
+      const throttledPersist = createThrottledPersist(() => {
+        // Inline persist to access projects ref
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify({ projects: projects.value }))
+        } catch {
+          // Ignore localStorage errors
         }
-      } else if (job.status === 'failed') {
-        const msgIndex = projects.value[projectId]!.messages.findIndex(
-          (m) => m.id === assistantMessage.id
-        )
-        if (msgIndex !== -1) {
-          projects.value[projectId]!.messages[msgIndex] = {
-            ...assistantMessage,
-            content: 'The request failed. Please try again.',
-            status: 'error',
-            error: typeof job.error === 'string' ? job.error : 'Unknown error',
-          }
+      })
+
+      // Cancel any existing stream for this project
+      const existingHandle = activeStreams.get(projectId)
+      if (existingHandle) {
+        existingHandle.close()
+        activeStreams.delete(projectId)
+      }
+
+      // Try streaming first, fall back to polling on error
+      // Use a flag to track if we should poll instead
+      let shouldPollInstead = false
+      const authStore = useAuthStore()
+      const apiKey = authStore.getApiKey()
+
+      try {
+        const streamHandle = chatJobs.streamJob(
+          jobId,
+          {
+            onJobUpdate: (job) => {
+            if (msgIndex === -1) return
+
+            const currentMsg = projects.value[projectId]!.messages[msgIndex]
+            if (!currentMsg) return
+
+            // Extract text from result
+            const assistantText = chatJobs.parseAssistantText(job.result)
+
+            // Update message with streaming status and new content
+            projects.value[projectId]!.messages[msgIndex] = {
+              ...currentMsg,
+              content: assistantText,
+              status: job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled'
+                ? (job.status === 'succeeded' ? 'success' : 'error')
+                : 'streaming',
+            }
+
+            // Throttle persistence during streaming
+            throttledPersist(false)
+          },
+
+          onError: (streamError) => {
+            console.warn('[chatStore] Stream failed, falling back to polling:', streamError.message)
+            shouldPollInstead = true
+
+            // Close stream
+            const handle = activeStreams.get(projectId)
+            if (handle) {
+              handle.close()
+              activeStreams.delete(projectId)
+            }
+
+            // Update status to pending
+            if (msgIndex !== -1) {
+              const currentMsg = projects.value[projectId]!.messages[msgIndex]
+              if (currentMsg) {
+                projects.value[projectId]!.messages[msgIndex] = {
+                  ...currentMsg,
+                  status: 'pending',
+                }
+                throttledPersist(true)
+              }
+            }
+          },
+        },
+        {
+          apiKey,
+          firstEventTimeout: options.streamFirstEventTimeout ?? 3000,
+        })
+
+        // Store stream handle for cleanup
+        activeStreams.set(projectId, streamHandle)
+
+        // Don't set streaming status yet - wait for first onJobUpdate event
+        // If stream fails immediately (onError), status stays 'pending' for polling fallback
+
+        // Wait a bit to see if stream starts successfully
+        // If shouldPollInstead is set, stream failed immediately
+        await new Promise(resolve => setTimeout(resolve, 100))
+
+        if (shouldPollInstead) {
+          // Stream failed, fall back to polling
+          throw new Error('Stream failed, falling back to polling')
         }
-      } else if (job.status === 'cancelled') {
-        const msgIndex = projects.value[projectId]!.messages.findIndex(
+      } catch (streamError) {
+        // Either streamJob() threw or stream failed immediately
+        // Fall back to regular polling
+        console.warn('[chatStore] Using polling fallback:', streamError)
+
+        // Cancel any active stream
+        const handle = activeStreams.get(projectId)
+        if (handle) {
+          handle.close()
+          activeStreams.delete(projectId)
+        }
+
+        // Fall back to polling
+        const pollTimeoutMs = options.pollTimeoutMs ?? 65000
+        const job = await withTimeout(
+          chatJobs.pollJobUntilComplete(jobId, {
+            interval: options.pollInterval ?? 1000,
+            maxAttempts: options.maxPollAttempts ?? 60,
+          }),
+          pollTimeoutMs,
+          `Chat request timed out after ${pollTimeoutMs}ms`
+        )
+
+        // Handle terminal states
+        const finalMsgIndex = projects.value[projectId]!.messages.findIndex(
           (m) => m.id === assistantMessage.id
         )
-        if (msgIndex !== -1) {
-          projects.value[projectId]!.messages[msgIndex] = {
-            ...assistantMessage,
-            content: 'The request was cancelled.',
-            status: 'error',
-            error: 'Job cancelled',
+        if (finalMsgIndex !== -1) {
+          const currentMsg = projects.value[projectId]!.messages[finalMsgIndex]
+          if (!currentMsg) return
+
+          if (job.status === 'succeeded') {
+            const assistantText = chatJobs.parseAssistantText(job.result)
+            projects.value[projectId]!.messages[finalMsgIndex] = {
+              ...currentMsg,
+              content: assistantText,
+              status: 'success',
+            }
+          } else if (job.status === 'failed') {
+            projects.value[projectId]!.messages[finalMsgIndex] = {
+              ...currentMsg,
+              content: 'The request failed. Please try again.',
+              status: 'error',
+              error: typeof job.error === 'string' ? job.error : 'Unknown error',
+            }
+          } else if (job.status === 'cancelled') {
+            projects.value[projectId]!.messages[finalMsgIndex] = {
+              ...currentMsg,
+              content: 'The request was cancelled.',
+              status: 'error',
+              error: 'Job cancelled',
+            }
           }
         }
       }
-    } catch (err) {
-      // Handle API or polling errors (including timeout)
-      const errorMessage =
-        err instanceof Error ? err.message : 'Unknown error occurred'
 
-      // Update the message in the array
+      // Clean up stream handle if polling fallback completed
+      // If stream failed, we already closed it in the onError handler
+      // If stream succeeded, it closed itself via auto-close on terminal state
+      // Just ensure cleanup for any edge cases
+      const handle = activeStreams.get(projectId)
+      if (handle) {
+        handle.close()
+        activeStreams.delete(projectId)
+      }
+    } catch (err) {
+      // Handle API errors (job creation, etc.)
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred'
+
       const msgIndex = projects.value[projectId]!.messages.findIndex(
         (m) => m.id === assistantMessage.id
       )
@@ -294,8 +437,14 @@ export const useChatStore = defineStore('chat', () => {
 
       error.value = errorMessage
     } finally {
+      // Always clear loading state
       loading.value = false
-      persist()
+      // Final persist to ensure state is saved
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ projects: projects.value }))
+      } catch {
+        // Ignore localStorage errors
+      }
     }
   }
 
@@ -314,6 +463,19 @@ export const useChatStore = defineStore('chat', () => {
       state.messages.splice(index, 1)
       persist()
     }
+  }
+
+  function cancelActiveStream(projectId: string): void {
+    const handle = activeStreams.get(projectId)
+    if (handle) {
+      handle.close()
+      activeStreams.delete(projectId)
+    }
+  }
+
+  function cancelAllStreams(): void {
+    activeStreams.forEach(handle => handle.close())
+    activeStreams.clear()
   }
 
   // Hydrate from localStorage on store creation
@@ -337,5 +499,7 @@ export const useChatStore = defineStore('chat', () => {
     sendUserMessage,
     clearMessages,
     deleteMessage,
+    cancelActiveStream,
+    cancelAllStreams,
   }
 })

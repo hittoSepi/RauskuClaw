@@ -129,7 +129,7 @@ if (cmd === "log") {
   sh("node scripts/docs-gen.mjs");
 
   if (flags.commit) {
-    sh("git add docs/milestones.yml docs/MILESTONES.md");
+   //  sh("git add docs/milestones.yml docs/MILESTONES.md");
 
     const msg = `docs: log ${real.sha} to M${real.current.id}`;
 

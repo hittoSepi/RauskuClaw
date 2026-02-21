@@ -6,6 +6,7 @@
  * Supports user, assistant, and system messages with different styling.
  */
 
+import { ref, watch, nextTick, computed } from 'vue'
 import type { ChatMessage } from '../store/chat.store'
 
 interface Props {
@@ -13,10 +14,46 @@ interface Props {
 }
 
 defineProps<Props>()
+
+// Auto-scroll logic
+const timelineRef = ref<HTMLElement>()
+const shouldAutoScroll = ref(true)
+
+function handleScroll() {
+  if (!timelineRef.value) return
+  const { scrollTop, scrollHeight, clientHeight } = timelineRef.value
+  const distanceToBottom = scrollHeight - scrollTop - clientHeight
+  shouldAutoScroll.value = distanceToBottom < 100
+}
+
+let rafId: number | null = null
+function scheduleAutoScroll() {
+  if (rafId !== null) return
+  rafId = requestAnimationFrame(() => {
+    if (shouldAutoScroll.value && timelineRef.value) {
+      timelineRef.value.scrollTop = timelineRef.value.scrollHeight
+    }
+    rafId = null
+  })
+}
+
+// Watch only message count and last message content (avoid expensive deep watch)
+const lastMessage = computed(() => messages[messages.length - 1])
+const lastContentLength = computed(() => lastMessage.value?.content.length ?? 0)
+
+watch([() => messages.length, lastContentLength], async () => {
+  await nextTick()
+  scheduleAutoScroll()
+})
 </script>
 
 <template>
-  <div class="chat-timeline" data-testid="chat-timeline">
+  <div
+    ref="timelineRef"
+    class="chat-timeline"
+    data-testid="chat-timeline"
+    @scroll="handleScroll"
+  >
     <!-- Empty state -->
     <div v-if="messages.length === 0" class="empty-state">
       <div class="empty-state-icon">💬</div>
@@ -60,6 +97,16 @@ defineProps<Props>()
             data-testid="chat-assistant-pending"
           >
             <span class="pending-dots"></span>
+          </div>
+
+          <!-- Streaming state -->
+          <div
+            v-else-if="msg.status === 'streaming'"
+            class="message-streaming"
+            data-testid="chat-assistant-streaming"
+          >
+            <div class="streaming-content">{{ msg.content }}</div>
+            <span class="streaming-caret">▍</span>
           </div>
 
           <!-- Error state -->
@@ -217,6 +264,34 @@ defineProps<Props>()
     opacity: 1;
     transform: scale(1);
   }
+}
+
+.message-streaming {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.streaming-content {
+  flex: 1;
+  font-size: var(--text-md);
+  color: var(--text-0);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.streaming-caret {
+  display: inline-block;
+  width: 8px;
+  height: 18px;
+  color: var(--text-0); /* Use reliable token, not --accent */
+  animation: blink 1s step-end infinite;
+  flex-shrink: 0;
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
 }
 
 .message-error {

@@ -381,3 +381,168 @@ export function parseAssistantText(result: unknown): string {
   // Nothing found: return empty string (keep UI clean, no JSON.stringify fallback)
   return ''
 }
+
+// ============================================
+// Streaming Types
+// ============================================
+
+export interface StreamJobHandlers {
+  /** Called when job update event received */
+  onJobUpdate?: (job: BackendJob) => void
+  /** Called when log append event received */
+  onLogAppend?: (log: { id: number; ts: string; level: string; message: string; meta: unknown }) => void
+  /** Called when stream ends normally */
+  onEnd?: () => void
+  /** Called when stream errors (network, parse, or timeout) */
+  onError?: (error: Error) => void
+}
+
+export interface StreamJobOptions {
+  /** API key for auth (required: EventSource can't send headers) */
+  apiKey: string
+  /** Timeout for first event in milliseconds (default: 3000ms) */
+  firstEventTimeout?: number
+}
+
+export interface StreamJobHandle {
+  /** Close the stream and cleanup resources */
+  close: () => void
+}
+
+// ============================================
+// Streaming Function
+// ============================================
+
+/**
+ * Stream job updates via Server-Sent Events (SSE)
+ *
+ * Uses EventSource with api_key query param for auth (required for EventSource).
+ * Falls back to polling if streaming fails.
+ *
+ * @param jobId - Job UUID
+ * @param handlers - Event callbacks for job_update, log_append, end, error
+ * @param options - apiKey (required), firstEventTimeout: default 3000ms
+ * @returns Handle with close() method to cancel stream
+ *
+ * @example
+ * ```ts
+ * const handle = streamJob('job_abc', {
+ *   apiKey: authStore.getApiKey(),
+ *   onJobUpdate: (job) => {
+ *     if (job.status === 'succeeded') {
+ *       const text = parseAssistantText(job.result)
+ *       // Update message content
+ *     }
+ *   },
+ *   onError: (err) => {
+ *     // Fall back to polling
+ *     await pollJobUntilComplete('job_abc')
+ *   }
+ * })
+ *
+ * // Later: cleanup
+ * handle.close()
+ * ```
+ */
+export function streamJob(
+  jobId: string,
+  handlers: StreamJobHandlers,
+  options: StreamJobOptions
+): StreamJobHandle {
+  const { apiKey, firstEventTimeout = 3000 } = options
+
+  // Use same origin (Vite proxy handles /v1/* in dev, gateway handles it in prod)
+  // SECURITY: Never log this URL - it contains api_key in query param
+  const u = new URL(`/v1/jobs/${encodeURIComponent(jobId)}/stream`, window.location.origin)
+  u.searchParams.set('api_key', apiKey)
+  const url = u.toString()
+
+  let eventSource: EventSource | null = null
+  let firstEventTimer: ReturnType<typeof setTimeout> | null = null
+  let isClosed = false
+
+  function startFirstEventTimer() {
+    firstEventTimer = setTimeout(() => {
+      if (!isClosed && eventSource?.readyState === EventSource.CONNECTING) {
+        eventSource.close()
+        isClosed = true
+        handlers.onError?.(new Error(`Stream timeout: no event received within ${firstEventTimeout}ms`))
+      }
+    }, firstEventTimeout)
+  }
+
+  function clearFirstEventTimer() {
+    if (firstEventTimer) {
+      clearTimeout(firstEventTimer)
+      firstEventTimer = null
+    }
+  }
+
+  try {
+    eventSource = new EventSource(url)
+    startFirstEventTimer()
+
+    eventSource.addEventListener('job_update', (e) => {
+      if (isClosed) return
+      clearFirstEventTimer()
+
+      try {
+        const data = JSON.parse(e.data) as { job: BackendJob }
+        handlers.onJobUpdate?.(data.job)
+
+        // Auto-close on terminal state
+        if (['succeeded', 'failed', 'cancelled'].includes(data.job.status)) {
+          close()
+        }
+      } catch (err) {
+        // Log parse error but don't close stream
+        console.error('[streamJob] Failed to parse job_update:', err)
+      }
+    })
+
+    eventSource.addEventListener('log_append', (e) => {
+      if (isClosed) return
+      clearFirstEventTimer()
+
+      try {
+        const log = JSON.parse(e.data) as { id: number; ts: string; level: string; message: string; meta: unknown }
+        handlers.onLogAppend?.(log)
+      } catch (err) {
+        console.error('[streamJob] Failed to parse log_append:', err)
+      }
+    })
+
+    eventSource.addEventListener('end', () => {
+      if (isClosed) return
+      clearFirstEventTimer()
+      handlers.onEnd?.()
+      close()
+    })
+
+    eventSource.onerror = (err) => {
+      if (isClosed) return
+      clearFirstEventTimer()
+
+      // EventSource.onerror fires for any error (404, network, etc.)
+      // Always call the error handler to trigger fallback polling
+      // SECURITY: Don't include URL in error message (contains api_key)
+      const error = new Error(`Stream error: ${err.type || 'unknown'}`)
+      handlers.onError?.(error)
+      close()
+    }
+  } catch (err) {
+    // EventSource constructor threw (invalid URL, etc.)
+    // SECURITY: Don't include URL in error message (contains api_key)
+    handlers.onError?.(err instanceof Error ? err : new Error('Failed to create EventSource'))
+    isClosed = true
+  }
+
+  function close() {
+    if (isClosed) return
+    isClosed = true
+    clearFirstEventTimer()
+    eventSource?.close()
+  }
+
+  return { close }
+}

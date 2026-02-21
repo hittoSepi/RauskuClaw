@@ -42,6 +42,7 @@ milestones:
     commits:
       - 49bdbad
       - d34edb8
+      - 1d0b53f
   - id: 26
     title: Chat threads v2 (server-ready)
     status: planned
