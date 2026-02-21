@@ -1,0 +1,16 @@
+{
+  "description": "Automatic git add for modified files",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'if [ \"$TOOL_NAME\" = \"Edit\" ] || [ \"$TOOL_NAME\" = \"Write\" ]; then git add \"$FILE_PATH\" 2>/dev/null || true; fi'",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

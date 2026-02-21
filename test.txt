@@ -1,0 +1,8 @@
+claudelle terveisiä!
+Testing git auto-add hook with this edit.
+Another line added via Write tool to trigger the hook.
+Testing the fixed hook script.
+Testing Hookify exec action.
+Round 5 of testing.
+Testing modified Hookify with exec action support.
+Round 6 - testing automatic trigger.
