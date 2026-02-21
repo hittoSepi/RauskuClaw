@@ -13,7 +13,7 @@
 
 ## Next
 
-- Milestone 26 — Chat threads v2 (server-ready)
+- (empty)
 
 ## Done
 

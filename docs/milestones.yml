@@ -1,4 +1,4 @@
-current: 24
+current: 25
 milestones:
   - id: 22
     title: MegaCommit 17-22
@@ -19,7 +19,7 @@ milestones:
       - 080711f
   - id: 24
     title: Project Chat (proper v1)
-    status: current
+    status: done
     goals:
       - Jobs-backed chat in /projects/:projectId/chat
       - Poll /v1/jobs/:id until terminal
@@ -29,19 +29,20 @@ milestones:
       - Deterministic Playwright test with mocked jobs
       - Build passes
     commits:
-      - 0b1cc5a
+      - 14d02f6
   - id: 25
     title: Chat streaming (SSE)
-    status: next
+    status: current
     goals:
       - Show assistant output live while job runs
     dod:
       - Falls back to polling
       - Stable Playwright (mock SSE or skip in lite)
-    commits: []
+    commits:
+      - 49bdbad
   - id: 26
     title: Chat threads v2 (server-ready)
-    status: next
+    status: planned
     commits: []
   - id: 27
     title: Inspector Drawer v1
