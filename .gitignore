@@ -152,6 +152,8 @@ vite.config.ts.timestamp-*
 # Own settings
 test.sh
 data/*
+docs/milestones.yml
+docs/MILESTONES.md
 
 .env
 
@@ -160,3 +162,4 @@ data/*
 /playwright-report/
 /blob-report/
 /trace.zip
+

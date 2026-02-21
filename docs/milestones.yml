@@ -42,8 +42,9 @@ milestones:
       - 49bdbad
   - id: 26
     title: Chat threads v2 (server-ready)
-    status: planned
+    status: next
     commits: []
+
   - id: 27
     title: Inspector Drawer v1
     status: unplanned
