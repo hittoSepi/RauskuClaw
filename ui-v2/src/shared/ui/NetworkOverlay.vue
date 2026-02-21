@@ -65,7 +65,7 @@ const visible = computed(() => !isOnline.value)
   border-radius: var(--r-lg);
   padding: var(--s-3) var(--s-4);
   box-shadow: var(--shadow-1);
-  max-width: min(480px, calc(100vw - 2 * var(--s-3)));
+  max-width: min(520px, calc(100vw - 2 * var(--s-3)));
   pointer-events: auto;
 
   /* Danger accent bar on left */
@@ -74,8 +74,8 @@ const visible = computed(() => !isOnline.value)
 
 .network-overlay-badge {
   position: relative;
-  width: 56px;
-  height: 56px;
+  width: 80px;
+  height: 80px;
   display: grid;
   place-items: center;
   border-radius: var(--r-lg);
@@ -86,9 +86,10 @@ const visible = computed(() => !isOnline.value)
 }
 
 .network-overlay-warn {
-  font-size: 44px;
+  font-size: 64px;
   line-height: 1;
   color: var(--danger);
+  transform: translateY(2px);
 }
 
 .network-overlay-sat {
@@ -96,7 +97,7 @@ const visible = computed(() => !isOnline.value)
   inset: 0;
   display: grid;
   place-items: center;
-  font-size: 18px;
+  font-size: 22px;
   line-height: 1;
   transform: translateY(2px);
 }
@@ -107,13 +108,13 @@ const visible = computed(() => !isOnline.value)
 
 .network-overlay-title {
   font-weight: 800;
-  font-size: 20px;
+  font-size: 22px;
   color: var(--danger);
   margin-bottom: 2px;
 }
 
 .network-overlay-text {
-  font-size: var(--text-md);
+  font-size: 17px;
   color: var(--text-0);
 }
 </style>
