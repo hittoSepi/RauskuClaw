@@ -13,7 +13,7 @@ interface Props {
   messages: ChatMessage[]
 }
 
-defineProps<Props>()
+const props = defineProps<Props>()
 
 // Auto-scroll logic
 const timelineRef = ref<HTMLElement>()
@@ -38,10 +38,10 @@ function scheduleAutoScroll() {
 }
 
 // Watch only message count and last message content (avoid expensive deep watch)
-const lastMessage = computed(() => messages[messages.length - 1])
+const lastMessage = computed(() => props.messages[props.messages.length - 1])
 const lastContentLength = computed(() => lastMessage.value?.content.length ?? 0)
 
-watch([() => messages.length, lastContentLength], async () => {
+watch([() => props.messages.length, lastContentLength], async () => {
   await nextTick()
   scheduleAutoScroll()
 })

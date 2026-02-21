@@ -4,8 +4,8 @@ FROM node:22-alpine
 WORKDIR /app
 
 # Install deps first (better caching)
-COPY package*.json ./
-RUN npm ci --omit=dev
+COPY package.json ./
+COPY server.mjs ./
 
 # Copy app source
 COPY . .
