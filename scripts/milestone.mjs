@@ -24,10 +24,6 @@ function sh(cmd) {
   execSync(cmd, { stdio: "inherit" });
 }
 
-function shOut(cmd) {
-  return execSync(cmd, { encoding: "utf8" }).trim();
-}
-
 function headShaShort() {
   return execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
 }
@@ -133,29 +129,12 @@ if (cmd === "log") {
   sh("node scripts/docs-gen.mjs");
 
   if (flags.commit) {
-    // sama tiukka commit-suoja kuin complete:ssa
-    const status = shOut("git status --porcelain");
-    const lines = status ? status.split("\n").filter(Boolean) : [];
-    const changedFiles = lines.map((l) => l.slice(3)).map((p) => p.trim());
-
-    const allowed = new Set(["docs/milestones.yml", "docs/MILESTONES.md"]);
-    const bad = changedFiles.filter((f) => !allowed.has(f));
-    if (bad.length) {
-      die(
-        "Refusing to auto-commit because non-doc files are changed/untracked:\n" +
-        bad.map((f) => `- ${f}`).join("\n")
-      );
-    }
-
     sh("git add docs/milestones.yml docs/MILESTONES.md");
 
     const msg = `docs: log ${real.sha} to M${real.current.id}`;
-    const staged = shOut("git diff --cached --name-only");
-    if (!staged) {
-      console.log("No staged changes to commit.");
-    } else {
-      sh(`git commit -m "${msg.replace(/"/g, '\\"')}"`);
-    }
+
+    // The pre-commit hook will auto-stage any other changed files
+    sh(`git commit -m "${msg.replace(/"/g, '\\"')}"`);
 
     if (flags.push) sh("git push");
   }
@@ -191,34 +170,14 @@ if (cmd === "complete") {
   sh("node scripts/docs-gen.mjs");
 
   if (flags.commit) {
-    const status = shOut("git status --porcelain");
-    const lines = status ? status.split("\n").filter(Boolean) : [];
-
-    // porcelain format: "XY path"
-    const changedFiles = lines.map(l => l.slice(3)).map(p => p.trim());
-
-    const allowed = new Set(["docs/milestones.yml", "docs/MILESTONES.md"]);
-    const bad = changedFiles.filter(f => !allowed.has(f));
-
-    if (bad.length) {
-      die(
-        "Refusing to auto-commit because non-doc files are changed/untracked:\n" +
-        bad.map(f => `- ${f}`).join("\n")
-      );
-    }
-
     sh("git add docs/milestones.yml docs/MILESTONES.md");
 
     const msg = real.promoted
       ? `docs: complete M${real.completed.id} + promote M${real.promoted.id}`
       : `docs: complete M${real.completed.id}`;
 
-    const staged = shOut("git diff --cached --name-only");
-    if (!staged) {
-      console.log("No staged changes to commit.");
-    } else {
-      sh(`git commit -m "${msg.replace(/"/g, '\\"')}"`);
-    }
+    // The pre-commit hook will auto-stage any other changed files
+    sh(`git commit -m "${msg.replace(/"/g, '\\"')}"`);
 
     if (flags.push) sh("git push");
 

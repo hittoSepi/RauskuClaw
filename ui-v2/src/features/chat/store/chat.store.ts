@@ -39,6 +39,8 @@ export interface SendOptions {
   pollInterval?: number
   /** Max poll attempts (default: 60 = 1 minute) */
   maxPollAttempts?: number
+  /** Overall poll timeout in milliseconds (default: 65000ms) */
+  pollTimeoutMs?: number
   /** Optional job type override */
   jobType?: 'codex.chat.generate' | 'ai.chat.generate'
 }
@@ -64,6 +66,18 @@ function tolerantJsonParse<T>(raw: string | null, fallback: T): T {
   } catch {
     return fallback
   }
+}
+
+/**
+ * Wrap a promise with a timeout. Rejects with Error if timeout elapses.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string = `Operation timed out after ${ms}ms`): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(message)), ms)
+    ),
+  ])
 }
 
 // ============================================
@@ -136,6 +150,28 @@ export const useChatStore = defineStore('chat', () => {
       return
     }
 
+    // Early offline guard
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      ensureProject(projectId)
+      const userMessage: ChatMessage = {
+        id: generateMessageId(),
+        role: 'user',
+        content: text,
+        createdAt: new Date().toISOString(),
+      }
+      const assistantMessage: ChatMessage = {
+        id: generateMessageId(),
+        role: 'assistant',
+        content: 'Offline: unable to connect.',
+        createdAt: new Date().toISOString(),
+        status: 'error',
+        error: 'Network offline',
+      }
+      projects.value[projectId]!.messages.push(userMessage, assistantMessage)
+      persist()
+      return
+    }
+
     // Ensure project state exists
     ensureProject(projectId)
 
@@ -185,11 +221,16 @@ export const useChatStore = defineStore('chat', () => {
       assistantMessage.jobId = jobId
       persist()
 
-      // Poll job until complete
-      const job = await chatJobs.pollJobUntilComplete(jobId, {
-        interval: options.pollInterval ?? 1000,
-        maxAttempts: options.maxPollAttempts ?? 60,
-      })
+      // Poll job until complete with timeout guarantee
+      const pollTimeoutMs = options.pollTimeoutMs ?? 65000
+      const job = await withTimeout(
+        chatJobs.pollJobUntilComplete(jobId, {
+          interval: options.pollInterval ?? 1000,
+          maxAttempts: options.maxPollAttempts ?? 60,
+        }),
+        pollTimeoutMs,
+        `Chat request timed out after ${pollTimeoutMs}ms`
+      )
 
       // Handle terminal states
       if (job.status === 'succeeded') {
@@ -232,7 +273,7 @@ export const useChatStore = defineStore('chat', () => {
         }
       }
     } catch (err) {
-      // Handle API or polling errors
+      // Handle API or polling errors (including timeout)
       const errorMessage =
         err instanceof Error ? err.message : 'Unknown error occurred'
 
@@ -243,7 +284,9 @@ export const useChatStore = defineStore('chat', () => {
       if (msgIndex !== -1) {
         projects.value[projectId]!.messages[msgIndex] = {
           ...assistantMessage,
-          content: 'Failed to send message. Please try again.',
+          content: errorMessage.includes('timeout') || errorMessage.includes('Timed out')
+            ? 'Request timed out. Please try again.'
+            : 'Failed to send message. Please try again.',
           status: 'error',
           error: errorMessage,
         }

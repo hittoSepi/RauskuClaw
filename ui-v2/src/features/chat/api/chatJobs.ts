@@ -121,6 +121,8 @@ export interface PollOptions {
   interval?: number
   /** Max poll attempts (default: 60 = 1 minute) */
   maxAttempts?: number
+  /** Per-request timeout in milliseconds (default: 10000ms) */
+  requestTimeout?: number
 }
 
 // ============================================
@@ -266,12 +268,14 @@ export async function createChatJob(options: CreateChatJobOptions): Promise<stri
  * Fetch a single job by ID
  *
  * @param jobId - Job UUID
+ * @param timeout - Request timeout in milliseconds (default: 10000ms)
  * @returns Backend job object
  */
-export async function getJob(jobId: string): Promise<BackendJob> {
+export async function getJob(jobId: string, timeout: number = 10000): Promise<BackendJob> {
   try {
     const response = await api<unknown>(
-      `/v1/jobs/${encodeURIComponent(jobId)}`
+      `/v1/jobs/${encodeURIComponent(jobId)}`,
+      { timeout }
     )
     return unwrapJob(response)
   } catch (error) {
@@ -288,7 +292,7 @@ export async function getJob(jobId: string): Promise<BackendJob> {
  * Terminal statuses: succeeded | failed | cancelled
  *
  * @param jobId - Job UUID
- * @param options - Polling options (interval: default 1000ms, maxAttempts: default 60)
+ * @param options - Polling options (interval: default 1000ms, maxAttempts: default 60, requestTimeout: default 10000ms)
  * @returns Completed backend job object
  *
  * @throws Error if polling times out
@@ -297,10 +301,10 @@ export async function pollJobUntilComplete(
   jobId: string,
   options: PollOptions = {}
 ): Promise<BackendJob> {
-  const { interval = 1000, maxAttempts = 60 } = options // 1 minute default
+  const { interval = 1000, maxAttempts = 60, requestTimeout = 10000 } = options
 
   for (let i = 0; i < maxAttempts; i++) {
-    const job = await getJob(jobId)
+    const job = await getJob(jobId, requestTimeout)
 
     if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') {
       return job
