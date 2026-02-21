@@ -542,8 +542,14 @@ function resolveRepoContext(input) {
 
 function openAiSettings() {
   const enabled = envBoolOrConfig("OPENAI_ENABLED", "providers.openai.enabled", false);
+
+  // NEW: secret_alias for holvi mode
+  const secretAlias = envOrConfig("OPENAI_SECRET_ALIAS", "providers.openai.secret_alias", "");
+
+  // Legacy: direct key mode
   const apiKeyEnv = String(getConfig("providers.openai.api_key_env", "OPENAI_API_KEY"));
   const apiKey = String(process.env[apiKeyEnv] || "").trim();
+
   const baseUrl = String(envOrConfig("OPENAI_BASE_URL", "providers.openai.base_url", "https://api.openai.com")).replace(/\/+$/, "");
   const chatCompletionsPath = String(
     envOrConfig("OPENAI_CHAT_COMPLETIONS_PATH", "providers.openai.chat_completions_path", "/v1/chat/completions")
@@ -551,7 +557,7 @@ function openAiSettings() {
   const model = String(envOrConfig("OPENAI_MODEL", "providers.openai.model", "gpt-4.1-mini")).trim();
   const timeoutMs = envIntOrConfig("OPENAI_TIMEOUT_MS", "providers.openai.timeout_ms", 30000);
 
-  return { enabled, apiKeyEnv, apiKey, baseUrl, chatCompletionsPath, model, timeoutMs };
+  return { enabled, secretAlias, apiKeyEnv, apiKey, baseUrl, chatCompletionsPath, model, timeoutMs };
 }
 
 function buildCompletionsUrl(settings) {
@@ -567,15 +573,30 @@ function buildCompletionsUrl(settings) {
 async function runOpenAiChat(input, options = {}) {
   const s = options.settings || openAiSettings();
   const fetchImpl = options.fetchImpl || fetch;
+
   if (!s.enabled) {
     throw createProviderError("PROVIDER_DISABLED", "OpenAI provider disabled. Set OPENAI_ENABLED=1 (or providers.openai.enabled=true).");
   }
-  if (!s.apiKey) {
-    throw createProviderError("PROVIDER_CONFIG", `OpenAI API key missing. Set ${s.apiKeyEnv}.`);
+
+  // Determine mode: holvi (via secret_alias) or legacy (direct key)
+  const useHolvi = Boolean(s.secretAlias);
+
+  if (useHolvi) {
+    // Holvi mode: require secret_alias, ignore apiKey
+    if (!s.secretAlias) {
+      throw createProviderError("PROVIDER_CONFIG", "OpenAI holvi mode enabled but OPENAI_SECRET_ALIAS is empty.");
+    }
+  } else {
+    // Legacy mode: require direct key
+    if (!s.apiKey) {
+      throw createProviderError("PROVIDER_CONFIG", `OpenAI API key missing. Set ${s.apiKeyEnv}.`);
+    }
   }
+
   if (!s.model) {
     throw createProviderError("PROVIDER_CONFIG", "OpenAI model is empty.");
   }
+
   const completionsUrl = buildCompletionsUrl(s);
 
   const baseMessages = normalizeMessages(input || {});
@@ -604,57 +625,86 @@ async function runOpenAiChat(input, options = {}) {
     payload.tool_choice = input.tool_choice;
   }
 
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), Math.max(1, s.timeoutMs));
-  try {
-    const resp = await fetchImpl(completionsUrl, {
+  let data;
+
+  if (useHolvi) {
+    // Holvi mode: use holviHttp wrapper
+    const result = await holviHttp({
+      alias: s.secretAlias,
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "authorization": `Bearer ${s.apiKey}`
-      },
-      body: JSON.stringify(payload),
-      signal: ctrl.signal
+      url: completionsUrl,
+      headers: { "content-type": "application/json" },
+      body: payload,
+      timeoutMs: s.timeoutMs
     });
 
-    const text = await resp.text();
-    let data = null;
-    try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+    const status = result.status;
+    const responseBody = typeof result.body === "string" ? result.body : "";
 
-    if (!resp.ok) {
-      const msg = data?.error?.message || data?.error || text || `OpenAI error ${resp.status}`;
-      throw createProviderError("PROVIDER_HTTP", String(msg), { status: resp.status });
+    try {
+      data = responseBody ? JSON.parse(responseBody) : null;
+    } catch {
+      data = null;
     }
 
-    const choice = data?.choices?.[0];
-    const outputText = extractAssistantText(choice);
-    const finishReason = choice?.finish_reason || null;
-    
-    // Extract tool_calls if present (for function calling)
-    const toolCalls = choice?.message?.tool_calls || null;
-    
-    // Allow empty text if tool_calls are present (function calling scenario)
-    if (!outputText.trim() && !toolCalls) {
-      throw createProviderError("PROVIDER_RESPONSE", "OpenAI returned empty assistant output.");
+    if (status >= 400) {
+      const msg = data?.error?.message || data?.error || responseBody || `OpenAI error ${status}`;
+      throw createProviderError("PROVIDER_HTTP", String(msg), { status });
     }
-    
-    return {
-      provider: "openai",
-      model: data?.model || s.model,
-      output_text: outputText,
-      finish_reason: finishReason,
-      tool_calls: toolCalls,
-      usage: data?.usage || null,
-      id: data?.id || null
-    };
-  } catch (e) {
-    if (e?.name === "AbortError") {
-      throw createProviderError("PROVIDER_TIMEOUT", `OpenAI request timed out after ${s.timeoutMs}ms.`);
+  } else {
+    // Legacy mode: direct fetch with Authorization header
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), Math.max(1, s.timeoutMs));
+
+    try {
+      const resp = await fetchImpl(completionsUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "authorization": `Bearer ${s.apiKey}`
+        },
+        body: JSON.stringify(payload),
+        signal: ctrl.signal
+      });
+
+      const text = await resp.text();
+      try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+
+      if (!resp.ok) {
+        const msg = data?.error?.message || data?.error || text || `OpenAI error ${resp.status}`;
+        throw createProviderError("PROVIDER_HTTP", String(msg), { status: resp.status });
+      }
+    } catch (e) {
+      if (e?.name === "AbortError") {
+        throw createProviderError("PROVIDER_TIMEOUT", `OpenAI request timed out after ${s.timeoutMs}ms.`);
+      }
+      throw toProviderError(e, "PROVIDER_NETWORK", "OpenAI request failed");
+    } finally {
+      clearTimeout(timer);
     }
-    throw toProviderError(e, "PROVIDER_NETWORK", "OpenAI request failed");
-  } finally {
-    clearTimeout(timer);
   }
+
+  const choice = data?.choices?.[0];
+  const outputText = extractAssistantText(choice);
+  const finishReason = choice?.finish_reason || null;
+
+  // Extract tool_calls if present (for function calling)
+  const toolCalls = choice?.message?.tool_calls || null;
+
+  // Allow empty text if tool_calls are present (function calling scenario)
+  if (!outputText.trim() && !toolCalls) {
+    throw createProviderError("PROVIDER_RESPONSE", "OpenAI returned empty assistant output.");
+  }
+
+  return {
+    provider: "openai",
+    model: data?.model || s.model,
+    output_text: outputText,
+    finish_reason: finishReason,
+    tool_calls: toolCalls,
+    usage: data?.usage || null,
+    id: data?.id || null
+  };
 }
 
 module.exports = {

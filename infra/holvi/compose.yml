@@ -49,10 +49,17 @@ services:
       INFISICAL_SERVICE_TOKEN: ${INFISICAL_SERVICE_TOKEN}
       ALIAS_REGISTRY_PATH: /app/aliases.json
       PORT: 8099
+      # Hardening options
+      MAX_BODY_BYTES: ${MAX_BODY_BYTES:-262144}
+      RATE_LIMIT_CAPACITY: ${RATE_LIMIT_CAPACITY:-100}
+      RATE_LIMIT_REFILL_RATE: ${RATE_LIMIT_REFILL_RATE:-10}
+      REQUEST_TIMEOUT_MS: ${REQUEST_TIMEOUT_MS:-30000}
+      CONNECT_TIMEOUT_MS: ${CONNECT_TIMEOUT_MS:-5000}
+      HOLVI_BIND: ${HOLVI_BIND:-0.0.0.0}
     volumes:
       - ./holvi-proxy/aliases.json:/app/aliases.json:ro
     ports:
-      - "8099:8099"
+      - "127.0.0.1:8099:8099"
     networks: [holvi_net]
 
 networks:

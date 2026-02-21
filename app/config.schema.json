@@ -171,6 +171,7 @@
           "properties": {
             "enabled": { "type": "boolean" },
             "api_key_env": { "type": "string", "minLength": 1 },
+            "secret_alias": { "type": "string", "minLength": 1 },
             "base_url": { "type": "string", "minLength": 1 },
             "chat_completions_path": { "type": "string", "minLength": 1 },
             "model": { "type": "string", "minLength": 1 },
