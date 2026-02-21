@@ -1,4 +1,4 @@
-current: 25
+current: 24
 milestones:
   - id: 22
     title: MegaCommit 17-22
@@ -19,7 +19,7 @@ milestones:
       - 080711f
   - id: 24
     title: Project Chat (proper v1)
-    status: done
+    status: current
     goals:
       - Jobs-backed chat in /projects/:projectId/chat
       - Poll /v1/jobs/:id until terminal
@@ -32,7 +32,7 @@ milestones:
       - 0b1cc5a
   - id: 25
     title: Chat streaming (SSE)
-    status: current
+    status: next
     goals:
       - Show assistant output live while job runs
     dod:
