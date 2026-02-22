@@ -1,169 +1,200 @@
-# RauskuClaw
+RauskuClaw
 
-RauskuClaw is an open-source self-hosted job runner and AI-assistant platform. 
-  It provides a **Docker-based stack** with a REST API server, a background worker, and a web UI (Vue 3) for managing jobs, schedules, memory contexts, and chat-style AI workflows. 
-  Users can enqueue and monitor jobs, store and search “memory” entries, run recurring schedules, and interact via a chat interface with optional semantic memory integration. 
-  It supports custom job types (including AI chat via Codex or OpenAI) and secure callback webhooks. 
-  The API uses an **X-API-Key** header (single or multi-key mode) to authorize all `/v1/*` requests【7†L263-L272】【49†L311-L320】.
+RauskuClaw is an open-source self-hosted AI job runner and automation platform. It provides a Docker-based stack with a REST API, background worker, and a Vue3 web UI. Users can create and manage jobs (including AI chat jobs via OpenAI/Codex), schedules, and a semantic “memory” store. Results can trigger webhooks. The platform supports secure API key authentication: all /v1/* calls require X-API-Key (single or multi-key mode). By default, unauthorized requests are rejected (no open endpoints in production).
+Architecture Overview
 
-## Architecture Overview
+    API (rauskuclaw-api): Node.js/Express service. Listens on 127.0.0.1:3001 internally, serving /v1/* endpoints (/v1/health, /v1/ping, jobs, memory, runtime info). Uses SQLite (/data/rauskuclaw.sqlite). Configured via rauskuclaw.json and .env.
+    Worker (rauskuclaw-worker): Node.js process. Polls the DB for queued jobs and executes them (tool handlers, chat, etc.). Shares volumes with API.
+    UI v1 (rauskuclaw-ui): Vue3 Single-Page App (container). Serves on host port 3002. Routed under /ui/ by Nginx. Provides legacy web interface for chats, jobs, memory, etc.
+    UI v2 (rauskuclaw-ui-v2): Vue3 SPA (container). Serves on host port 3003. Routed at / by Nginx. Implements a project-centric workspace (per ui-refactor-plan/PLAN.md). Sidebar navigation includes Chats, Projects, Tasks, Logs, Settings. Within a project: Overview, Chat, Tasks (Kanban), Memory, Repo, Workdir, Logs, Settings. Inspector panel shows details of selected items (messages, tasks, memory entries).
+    Ollama (rauskuclaw-ollama): Embedding server (container) on port 11434. Hosts local models for semantic memory. Default model is embeddinggemma:300m-qat-q8_0.
+    Host Nginx proxy: Routes external traffic. Sample nginx/rauskuclaw.conf config:
+        location /ui/ → proxy to http://127.0.0.1:3002/ (legacy UI).
+        location /v1/ → proxy to http://127.0.0.1:3001 (API).
+        location / → proxy to http://127.0.0.1:3003/ (new UI), with strict CSP (only self and https connections).
+        location ^~ /assets/ → proxy static assets to UI-v2 container.
+        Security headers (CSP, X-Frame, X-Content-Type) are set at the proxy.
+        Firewall: Only ports 80/443 should be public; 3001–3003 should remain on localhost.
 
-- **rauskuclaw-api** (Node/Express): listens on `127.0.0.1:3001`, serves `/v1/*` endpoints and `/health`【20†L78-L87】. Configured via `rauskuclaw.json`/`.env`. All API routes require `x-api-key` (legacy single key or multi-key JSON with roles)【7†L263-L272】.
-- **rauskuclaw-worker** (Node): polls the SQLite DB (`/data/rauskuclaw.sqlite`) for queued jobs and executes built-in or provider-backed handlers. It mounts the same data/workspace volumes as the API.
-- **rauskuclaw-ui** (Vue3, legacy): container on port `3002` (host 3002). Serves the old UI under `/ui/`.  
-- **rauskuclaw-ui-v2** (Vue3 SPA): container on port `3003` (host 3003). Serves the new UI under `/` (root path) and `/assets/`. This is an experimental rewrite (refer to [ui-refactor-plan](docs/PLAN.md) for details).  
-- **rauskuclaw-ollama**: local Ollama container (port 11434) providing embedding APIs for semantic memory. Models stored in Docker volume `ollama_data`【20†L78-L87】.
-- **Nginx reverse proxy** (host): routes `https://…/ui/` to the UI container and `https://…/` to UI-v2, and proxies `/v1/` to the API. It enforces **HTTPS** (Certbot certificates), sets strict CSP and security headers, and blocks probing of sensitive files (e.g. `.env`, `.git` paths) with a 444 response【38†L25-L33】. Example location blocks:
-  - `location /ui/ { … proxy_pass http://127.0.0.1:3002/; add_header Content-Security-Policy "default-src 'self'; …"}`
-  - `location /v1/ { … proxy_pass http://127.0.0.1:3001; add_header Content-Security-Policy "default-src 'none'; …"}`
-  - `location / { … proxy_pass http://127.0.0.1:3003/; add_header Content-Security-Policy "default-src 'self'; …"}`
-- **Volumes/Networks**: The Docker Compose defines a `default` network and an external `holvi_holvi_net` (for Holvi integration). Shared volumes include `./data` (for SQLite) and `./workspace` (for user files).
+lua
 
-```
-               +------------+       +------------------+      +-------------+
-Browser  --->  | Host Nginx  | --->  | rauskuclaw-UI(-v2)|      | rauskuclaw-API|
-   | http(s)   |  (443/80)   |      |  Docker container|      |   container  |
-   +------------+       +------------------+      +-------------+
-        |                         | /ui/ or /        | /v1/ (API) 
-        |                         | (vue SPA)        |
-        |                         v                 v
-        |                     +-------------+      +--------------+
-        |                     | rauskuclaw- |      | rauskuclaw-  |
-        |                     | UI container |      | API container|
-        |                     +-------------+      +--------------+
-        |                                             |
-        |<--------------------------------------------|
-                   Internal Docker network (127.0.0.1)
-```
+Browser
+  ↓ HTTPS
++-----------+
+|  Nginx    |  ←─── / (UI-v2) ───┐
+| (443/80)  |  ←─── /ui/ (UI-v1)─┼───> rauskuclaw-ui (3002)
++-----------+                  └───> rauskuclaw-ui-v2 (3003)
+     │    └─── /v1/ (API) ──> rauskuclaw-api (3001)
+     ↓                |             ↑
+  Internet            |             | (Shared Docker volumes)
+            +----------------------+--+  (Holvi network)
+            | Worker & Ollama      |
+            +----------------------+
 
-## Quickstart (Local Development)
+Quickstart (Local Dev)
 
-1. **Prerequisites:** Install Docker and Docker Compose (plugin v2+), and Node.js/npm (for CLI and building UI). Ensure `docker daemon` is running.  
-2. **Clone and configure:**  
-   ```bash
-   git clone https://github.com/hittoSepi/RauskuClaw.git
-   cd RauskuClaw
-   cp .env.example .env
-   ```  
-   Edit `.env` to set at least `API_KEY` (replace `change-me-please`) or define `API_KEYS_JSON` for multi-key auth【6†L185-L193】【28†L0-L9】. Customize other variables as needed (ports, keys, provider flags, etc.)【6†L185-L193】.  
-3. **Build and run containers:**  
-   ```bash
-   docker compose up -d --build
-   docker compose ps
-   ```  
-   This builds and starts all services (API, Worker, UI, UI-v2, Ollama). By default, `rauskuclaw-api` listens on `127.0.0.1:3001`, and UI on 3002/3003 (see Compose file).  
-4. **Initialize workspace (optional):** Place user files under `./workspace`. The API has file-browser endpoints (`/v1/workspace/*`) for managing these files.  
-5. **UI Access:** In your browser, navigate to `https://your-host/` for the new UI-v2 (root path) or `/ui/` for the legacy UI. The UIs will request API data via the reverse proxy.  
-6. **CLI installation (optional):** In another terminal (host machine), install the local operator CLI:  
-   ```bash
-   cd RauskuClaw/cli
-   npm install   # install dependencies
-   npm link      # make `rauskuclaw` command available globally
-   ```  
-   Now you can run commands like `rauskuclaw setup`, `rauskuclaw start`, etc.
+    Prerequisites: Install Docker (Engine + Compose plugin) and Node.js (18+). Enable IPv4 precedence if using Codex CLI (see Troubleshooting).
+    Clone & Config:
 
-## Quickstart (Production/VPS)
+    bash
 
-1. **Server Setup:** On a Linux server (e.g. Ubuntu), install Docker Engine and Docker Compose. Copy the repository and `.env` as above. Ensure `API_KEY` and any provider secrets are set.  
-2. **Environment:** For production, you may bind services to all interfaces or behind a domain. The Compose file binds API/UI to `127.0.0.1` by default (for security).  
-3. **Run containers:** Use `docker compose up -d --build`. Ensure ports `3001-3003` are only accessible to localhost or firewall them if using a proxy.  
-4. **Reverse Proxy / SSL:** Use the provided Nginx config (`nginx/rauskuclaw.conf`) as a template. Configure your domain to point at the server, and install certificates (Certbot or similar). The example config forces HTTPS and applies strict CSP and security headers【38†L25-L33】.  
-5. **Firewall:** Only allow ports 80/443 publicly. All other service ports can stay on localhost.  
-6. **Holvi (Infisical) Integration (Optional):** If using Holvi for secrets, set `OPENAI_SECRET_ALIAS` in `.env` and deploy the Holvi stack (`infra/holvi/compose.yml`) alongside. See `infra/holvi/README.md` for details.
+    git clone https://github.com/hittoSepi/RauskuClaw.git
+    cd RauskuClaw
+    cp .env.example .env
 
-## Environment Variables and Config
+    Edit
+    .env: set at least API_KEY=<your-key> (replacing change-me-please) or define API_KEYS_JSON for multiple roles. Configure other vars as needed (e.g. OPENAI_ENABLED=1 and either OPENAI_API_KEY or use OPENAI_SECRET_ALIAS with Holvi).
+    Build & Run:
 
-Required variables and defaults (from `.env.example`):  
+    bash
 
-| Variable                   | Default               | Service        | Description                                                    |
-|----------------------------|-----------------------|----------------|----------------------------------------------------------------|
-| `API_KEY`                  | `change-me-please`    | API            | Main admin API key for `/v1/*` (required unless disabled)【6†L185-L193】. |
-| `API_KEYS_JSON`            | (empty)               | API            | JSON array for multi-key auth (overrides `API_KEY`)【6†L185-L193】. |
-| `API_AUTH_DISABLED`        | `0`                   | API            | Set to `1` (dev only) to bypass auth.                          |
-| `PORT`                     | `3001`                | API            | API listen port (inside container).                            |
-| `DB_PATH`                  | `/data/rauskuclaw.sqlite` | API/Worker | SQLite file path (inside container).                            |
-| `WORKER_QUEUE_ALLOWLIST`   | `default`             | Worker         | Comma-separated queues the worker will poll.                   |
-| `OPENAI_ENABLED`           | `0`                   | Worker         | Enable OpenAI (or compatible) chat provider.                  |
-| `OPENAI_API_KEY`           | (empty)               | Worker         | Required if OpenAI is enabled.                                 |
-| `OPENAI_CHAT_COMPLETIONS_PATH` | `/v1/chat/completions` | Worker | Endpoint path for chat completions (set for custom APIs).      |
-| `CODEX_OSS_ENABLED`        | `0`                   | Worker         | Enable local Codex CLI chat provider.                         |
-| `CODEX_OSS_MODEL`         | (empty)               | Worker         | Model name for Codex CLI (if enabled).                         |
-| `WORKSPACE_ROOT`           | `/workspace`          | API            | Root directory for workspace files (mapped from `./workspace`). |
-| `WORKSPACE_FILE_WRITE_MAX_BYTES` | `262144`        | API            | Max bytes for file write API.                                 |
-| `MEMORY_VECTOR_ENABLED`    | `0`                   | API/Worker     | Enable vector embeddings (requires SQLite vector extension).    |
-| `OLLAMA_BASE_URL`          | `http://rauskuclaw-ollama:11434` | API/Worker | Embedding server URL for Ollama.                           |
-| `OLLAMA_EMBED_MODEL`       | `embeddinggemma:300m-qat-q8_0` | API/Worker | Default Ollama embedding model.                                |
-| (Several others…)          |                       |                | See `.env.example` for full list and `docs/CONFIG.md` for details. |
+    docker compose up -d --build
+    docker compose ps
 
-Configuration precedence: **Environment (.env) > `rauskuclaw.json` > code defaults**【8†L374-L383】. The shared `rauskuclaw.json` (mounted into containers) also defines defaults and can be used for static config. See `docs/CONFIG.md` for full field reference.
+    This starts all containers (API, Worker, UI, UI-v2, Ollama, etc.). The worker may take a moment to connect.
+    Initialize Workspace (Optional): Place any user files under ./workspace on host; the API will mount /workspace. The UI has file-browser views under Repo/Workdir.
+    Access UI: In a browser, visit http://localhost:3003/ for the new UI-v2 (root path) or http://localhost:3003/ui/ for the legacy UI. Both UIs will authenticate with the API key.
+    Install CLI (Optional):
 
-## Operator CLI (`rauskuclaw`)
+    bash
 
-The CLI wraps common Docker commands and API checks. Key commands:
+    cd cli
+    npm install
+    npm link    # makes `rauskuclaw` available globally
 
-- `rauskuclaw setup` – Initializes the project: creates `.env` (with defaults) and ensures `rauskuclaw.json` and workspace templates are in place.  
-- `rauskuclaw start` – Starts all services (`docker compose up -d --build`).  
-- `rauskuclaw stop` – Stops all containers.  
-- `rauskuclaw restart` – Restarts the stack (`stop` + `start`).  
-- `rauskuclaw status` – Shows container status (`docker compose ps`).  
-- `rauskuclaw logs <api|worker|ui>` – Shows real-time logs for the specified service (optional flags like `--since`, `--follow`). Example: `rauskuclaw logs api --tail 200`.  
-- `rauskuclaw smoke [--suite m1|m3|m4]` – Runs built-in integration tests (healthcheck, idempotency, provider failure/success, memory flows). Example: `rauskuclaw smoke --suite m3 --success`【18†L66-L75】.  
-- `rauskuclaw memory reset --yes [--scope <scope>]` – Clears memory entries (requires `--yes` to confirm). Without `--scope`, all memory is purged【18†L89-L98】.  
-- `rauskuclaw auth whoami` – Shows the authenticated API principal (name, role, SSE permission, queue allowlist)【49†L311-L320】【42†L68-L77】. Uses the API key from `.env` or `--api` flag.  
-- `rauskuclaw doctor` – Checks local environment dependencies (Docker daemon, Docker Compose, Codex CLI, etc.) and reports issues. Use `--fix-hints` to get remediation tips.  
-- `rauskuclaw codex login|logout` – Manages Codex CLI OAuth login. Use `--device-auth` for device flow.  
-- `rauskuclaw codex exec …` – Executes a Codex CLI command within the CLI environment (e.g. to test Codex integration).  
-- `rauskuclaw config show|validate|path` – Inspect the current config: `show` outputs env values, `validate` checks required keys, `path` shows file paths【18†L139-L147】【18†L151-L160】.  
-- `rauskuclaw help`, `rauskuclaw version` – Help and version info.
+    Now use
+    rauskuclaw commands (below). Verify by running rauskuclaw version.
 
-All commands support `--json` to emit machine-readable JSON output (see [`docs/CLI.md`](docs/CLI.md) for examples【18†L17-L26】).
+Quickstart (Production/VPS)
 
-## Observability & Troubleshooting
+    Server Setup: On a Linux VPS, install Docker Engine and Compose. Clone repo and prepare .env as above. Ensure API_KEY or API_KEYS_JSON is secure.
+    Environment: Typically bind to 127.0.0.1 for services, and use a reverse proxy (Nginx) for public access. If using domain names, update Nginx server_name and SSL certificates (see sample in nginx/rauskuclaw.conf).
+    Run Services:
 
-- **Logs:** Check container logs (`docker logs`) or use `rauskuclaw logs`. For example: `rauskuclaw logs api --tail 200` or `docker logs -f rauskuclaw-worker`.  
-- **Smoke tests:** Use the CLI smoke suites to verify end-to-end functionality (health, auth, idempotency, retry, providers, memory). For example, run `rauskuclaw smoke --suite m1` after startup to catch basic issues.  
-- **Common issues:**  
-  - *API not reachable:* Verify `rauskuclaw-api` container is running (`docker compose ps`) and bound to `127.0.0.1:3001`【9†L578-L586】. Check if the Nginx proxy is correctly forwarding `/v1/`.  
-  - *Jobs stuck queued:* Ensure `rauskuclaw-worker` is running and connected to the same DB. Inspect worker logs for errors.  
-  - *Live job logs not streaming:* Confirm `/v1/jobs/:id/stream` works and that the UI’s API key matches backend config【9†L584-L589】. SSE requires getting a token first (`POST /v1/auth/sse-token`) or using `?api_key=` (legacy).  
-  - *UI won’t load:* Check Nginx location for `/ui/` and `/` (UI-v2) are correct, and that `rauskuclaw-ui`/`ui-v2` containers are healthy on ports 3002/3003.  
-  - *CORS/Content-Security:* The default Nginx adds strict CSP headers【38†L25-L33】. If the UI is served on a sub-path (e.g. `/ui/`), ensure the base href and CSP allow it.  
-  - *IPv6/CaCerts (Codex):* The Dockerfile adds `ca-certificates` and forces IPv4 (see `app/Dockerfile`) to ensure `codex exec` can reach OpenAI. If Codex CLI calls hang, confirm network and CA store.
+    bash
 
-- **Metrics & Alerts:** Runtime metrics can be polled via `GET /v1/runtime/metrics`. Default alerts include queue-stall and failure-rate (configurable via env)【7†L243-L252】.
+    docker compose up -d --build
 
-## Security Notes
+    Use
+    docker compose ps to check containers. Only expose ports 80/443 externally.
+    Configure Proxy: Use the provided Nginx sample to route / to UI-v2, /ui/ to UI-v1, and /v1/ to API. Install SSL (Certbot or your choice).
+    Holvi/Infisical (Optional): If storing keys in Infisical, deploy the Holvi stack (see Secret Management below). Then set:
 
-- **API Key Auth:** All `/v1/` calls require `x-api-key`. By default, an empty or missing key yields `503 AUTH_NOT_CONFIGURED` (deny-all)【9†L484-L493】. Only in a trusted dev environment set `API_AUTH_DISABLED=1`.  
-- **Key Roles:** In multi-key mode, keys have roles (`admin` or `read`) and an optional queue allowlist. Read-only keys cannot perform mutations (`POST`/`PATCH`/`DELETE` return 403)【49†L311-L320】. A queue-allowlisted key only sees/creates jobs in its queues (other queues yield 403 with `allowed_queues` info).  
-- **SSE (EventSource):** Browsers can’t send headers. Use `POST /v1/auth/sse-token` with your API key to get a short-lived token, then call `/v1/jobs/:id/stream?token=…`. The legacy `?api_key=` parameter is still supported but discouraged【9†L490-L493】.  
-- **Callbacks:** Jobs with a `callback_url` will POST results after completion (if enabled). Use `CALLBACK_ALLOWLIST` to restrict domains. To sign payloads, enable `CALLBACK_SIGNING_ENABLED=1` and set `CALLBACK_SIGNING_SECRET`; if missing, callbacks are skipped and logged.  
-- **Providers:** The built-in `codex.chat.generate` and `ai.chat.generate` handlers are **disabled by default**. Enable with `CODEX_OSS_ENABLED=1` or `OPENAI_ENABLED=1` and provide credentials. Codex CLI uses OAuth login (`codex login`). The system auto-selects Codex vs OpenAI based on which is enabled【7†L263-L272】.  
-- **Input Validation:** The API validates handler inputs at job creation for risky operations (`tool.exec`, `data.fetch`, etc.) and enforces timeouts, payload limits, and allowlists configured by env or `rauskuclaw.json`.  
-- **CSP & Headers:** The sample Nginx config enforces strict Content Security Policies per location【38†L25-L33】. By default, we serve over HTTPS, set `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, and `Referrer-Policy: no-referrer`.  
-- **No Env Leaks:** The Nginx drop rules prevent serving sensitive files (paths like `/.env`, `/.git`, AWS credentials, etc.)【38†L40-L45】. The UI stores API keys only in sessionStorage (not in HTML/JS code) to avoid leaks.
+    ini
 
-## Contributing & Development
+    OPENAI_ENABLED=1
+    OPENAI_SECRET_ALIAS=sec://openai_api_key
+    HOLVI_PROXY_TOKEN=<from infisical .env>
+    HOLVI_BASE_URL=http://holvi-proxy:8099
 
-- **Workflow:** This is a Docker-first project. To develop, edit code, then rebuild:  
-  ```bash
-  # from repo root
-  docker compose up -d --build rauskuclaw-api rauskuclaw-worker rauskuclaw-ui rauskuclaw-ui-v2
-  ```  
-  Use `docker logs -f <container>` or the CLI (`rauskuclaw logs`) to inspect output【9†L542-L551】. API tests and smoke scripts live under `scripts/`.  
-- **Tests:** Unit tests exist for API, providers, CLI, etc. Run them with `npm test` in the respective directories (`app`, `cli`, etc.).  
-- **Formatting:** Follow the existing code conventions (semicolons, linting) – ESLint or Prettier can be added.  
-- **CI:** (Not detailed here) Use GitHub Actions or similar to run tests on push.  
-- **Docs:** The `docs/` folder contains design docs (CONFIG, CLI, MILESTONES, etc.). Updates to architecture or workflows are welcome.  
-- **License:** (Add license here if open-sourced; otherwise note proprietary.)  
+    Restart services after enabling Holvi mode.
 
-## Known Gaps / TODO
+Environment & Dependencies
 
-- UI-v2 is under active development; consider moving operator flows there fully (currently both UIs exist).  
-- A formal **Runbook** or **Architecture diagram** document would help new operators (this README contains much of that, but a separate clean diagram could be added).  
-- Integration with external services (OpenAI Holvi, hosted SQL, etc.) may need more docs (see `infra/holvi` for secret management).  
-- Multi-tenant or clustering support is not yet implemented (single-instance SQLite only).  
-- License and third-party notices: include explicit license file and credit third-party libs per their terms.
+    OS: Linux or macOS recommended (Docker support).
+    Docker: Docker Engine + Compose plugin.
+    Node.js: Required for CLI and UI builds (Node 18+ used in Docker images).
+    Optional Tools: Codex CLI (if using CODEX_OSS, installed in worker image), Git (for repository tasks), Certbot (for Nginx SSL).
 
-**External Resources:** For detailed config reference see `docs/CONFIG.md` (field-by-field) and `docs/CLI.md` (command contracts)【7†L290-L294】【18†L17-L26】. For API routes and behavior, refer to the summaries above and integration tests. 
+Key env vars (in .env or host environment):
+Variable	Default	Service(s)	Description
+API_KEY	change-me-please	API	Primary API key (legacy single-key mode).
+API_KEYS_JSON	(empty)	API	JSON array of keys with roles (read/admin).
+API_AUTH_DISABLED	0	API	Set 1 to disable API auth (dev only).
+PORT	3001	API	API listen port (inside container).
+DB_PATH	/data/rauskuclaw.sqlite	API/Worker	SQLite DB path inside container.
+WORKER_QUEUE_ALLOWLIST	default	Worker	Comma-list of queues worker will process.
+OPENAI_ENABLED	0	Worker	Set 1 to enable OpenAI/ChatGPT calls.
+OPENAI_API_KEY	(empty)	Worker	OpenAI API key (if not using Holvi).
+OPENAI_CHAT_COMPLETIONS_PATH	/api/paas/v4/chat/completions	Worker	Path for OpenAI-compatible chat endpoint.
+OPENAI_TIMEOUT_MS	5000	Worker	Request timeout for OpenAI calls (ms).
+CODEX_OSS_ENABLED	0	Worker	Set 1 to enable local Codex CLI provider.
+CODEX_EXEC_MODE	oss	Worker	Codex mode (oss for local CLI).
+CODEX_CLI_PATH	/usr/local/bin/codex	Worker	Path to Codex CLI executable.
+WORKSPACE_ROOT	/workspace	API	Root directory in container for file storage.
+WORKSPACE_FILE_WRITE_MAX_BYTES	262144	API	Max size for file writes.
+MEMORY_VECTOR_ENABLED	0	API/Worker	Set 1 to enable vector embeddings (requires Ollama).
+OLLAMA_BASE_URL	http://rauskuclaw-ollama:11434	API/Worker	URL to the Ollama embedding server.
+OLLAMA_EMBED_MODEL	embeddinggemma:300m-qat-q8_0	API/Worker	Default Ollama embedding model.
+(Several others…)			See .env.example for the full list.
 
+Configuration can also be provided in rauskuclaw.json (mounted from repo); environment values override file defaults.
+Operator CLI (rauskuclaw)
+
+The CLI provides shortcuts for common operations. Examples:
+Command	Usage	Description
+rauskuclaw setup	rauskuclaw setup	Initializes .env and rauskuclaw.json, seeding defaults (from templates).
+rauskuclaw start	rauskuclaw start	Starts all services via Docker Compose.
+rauskuclaw stop	rauskuclaw stop	Stops all services.
+rauskuclaw restart	rauskuclaw restart	Restarts the stack (stop then start).
+rauskuclaw status	rauskuclaw status	Shows service status (docker compose ps).
+rauskuclaw logs <svc>	rauskuclaw logs api	Tails logs for specified service (api, worker, ui, ui-v2).
+rauskuclaw smoke [--suite]	rauskuclaw smoke --suite m3	Runs integration smoke tests (M1–M4).
+rauskuclaw memory reset	rauskuclaw memory reset --yes	Resets semantic memory (requires --yes to confirm).
+rauskuclaw auth whoami	rauskuclaw auth whoami	Shows current API principal (name, role, SSE, can_write). Uses RAUSKUCLAW_API_BASE_URL or .env.
+rauskuclaw doctor	rauskuclaw doctor	Checks local environment (Docker, Codex CLI, etc.) and reports issues.
+rauskuclaw codex login	rauskuclaw codex login --device-auth	Initiates Codex CLI OAuth login.
+rauskuclaw codex logout	rauskuclaw codex logout	Logs out of Codex CLI.
+rauskuclaw codex exec	rauskuclaw codex exec <cmd>	Runs a Codex CLI command (e.g. rauskuclaw codex exec model ls).
+rauskuclaw config show	rauskuclaw config show	Displays effective configuration (env and file).
+rauskuclaw config validate	rauskuclaw config validate	Checks config for missing required settings.
+rauskuclaw config path	rauskuclaw config path	Shows path to rauskuclaw.json and .env.
+rauskuclaw version	rauskuclaw version	Prints version info.
+rauskuclaw help	rauskuclaw help	Shows usage for commands.
+
+(All commands support --json for machine output.) See docs/CLI.md and source in cli/commands for full details.
+Observability & Troubleshooting
+
+    Logs: Use rauskuclaw logs or docker logs. For example, rauskuclaw logs api --tail 200 shows the API output.
+    Smoke tests: Run rauskuclaw smoke after startup to verify basic functionality (health check, job flow, memory).
+    Doctor: rauskuclaw doctor checks Docker connectivity, Codex CLI availability, network, etc., with fix hints.
+    Common issues:
+        API not reachable (401/503): Check rauskuclaw-api is running on 127.0.0.1:3001. Ensure Nginx or CLI points to correct base URL. Verify X-API-Key header is set.
+        Jobs stuck: Ensure rauskuclaw-worker is running and connected to the same DB. Inspect worker logs.
+        Live chat/log streaming: Check SSE endpoint /v1/jobs/:id/stream. Ensure API key’s SSE permission and query param token usage (legacy ?api_key still allowed).
+        UI loading errors: Confirm Nginx proxy paths (/ui/ vs /) and that UI containers are healthy. Check CSP errors in console.
+        Codex/HTTPS issues: On some systems Docker may prefer IPv4. The Dockerfile adds ca-certificates and forces IPv4 for Codex CLI (see Dockerfile) to avoid networking issues. If Codex calls fail, check /etc/gai.conf in container.
+        File uploads: Nginx defaults client_max_body_size 1m (see config) – adjust if needed.
+    Metrics & Alerts: Query /v1/runtime/metrics for Prometheus-style stats. Set up alerts for queue length or worker failures (not preconfigured).
+
+Secret Management (Holvi/Infisical)
+
+RauskuClaw can fetch secrets from Infisical via a local Holvi proxy. To use this, run the Holvi stack (infra/holvi/compose.yml) which includes Infisical and a holvi-proxy. Then in your .env or host env set:
+
+dotenv
+
+OPENAI_ENABLED=1
+OPENAI_SECRET_ALIAS=sec://openai_api_key
+HOLVI_PROXY_TOKEN=<PROXY_SHARED_TOKEN>
+HOLVI_BASE_URL=http://holvi-proxy:8099
+
+The app will route OpenAI API calls through the proxy, which looks up the real key by alias. Ensure rauskuclaw-api and rauskuclaw-worker are on the same Docker network holvi_holvi_net so they can reach holvi-proxy. In legacy mode (no alias), set OPENAI_API_KEY directly in .env. For more details, see infra/holvi/README.md.
+Security Notes
+
+    HTTPS/CSP: The example Nginx enforces SSL and strict Content Security Policies. Always run behind TLS.
+    API Auth: No endpoint is publicly accessible without a key. Use strong API_KEY or API_KEYS_JSON. For SSE, prefer fetching a token (POST /v1/auth/sse-token) and using it instead of query keys.
+    Roles: In multi-key mode, admin keys can read/write, while keys with role:"read" can only GET/HEAD. Keys may also include queue_allowlist.
+    Callbacks: Jobs with callback_url require CALLBACK_ALLOWLIST (secure domains). Enable CALLBACK_SIGNING_ENABLED=1 and set CALLBACK_SIGNING_SECRET to sign payloads. If missing, callbacks are skipped.
+    Rate Limits / Size: The API imposes limits (e.g. MAX_BODY_BYTES). The Holvi proxy also rate-limits and sanitizes headers by default.
+    Secrets: Do not store raw API keys in the UI or logs. The UI reads keys from session storage only. Infisical/Holvi ensures secrets aren’t hard-coded in .env.
+
+Contributing / Dev Notes
+
+    Code style: JavaScript/Node (ES6+), Vue3 with TypeScript. Follow existing conventions.
+    Tests: Unit tests exist in app/test and cli/test. Run with npm test. Smoke tests: rauskuclaw smoke.
+    Rebuilding services: After code changes, rebuild containers. Example: docker compose up -d --build rauskuclaw-api rauskuclaw-worker.
+    CI: (Not included) Recommend GitHub Actions or similar.
+    License/Third-party: (Add license file if open-source. All dependencies (Express, Vue, Pinia, etc.) are under permissive licenses like MIT/Apache-2.0.)
+    Docker networks: Containers use a default network. External services (like Holvi) may require joining holvi_holvi_net.
+
+Known Gaps / TODO
+
+    UI-v2 documentation: Files like ui-refactor-plan/ROUTES.md or DESIGN_TOKENS.md are not in this branch. Current UI design is described in ui-refactor-plan/PLAN.md (Finnish). The README could be expanded once UI-v2 is stable.
+    Runbook/Architecture docs: Consider a separate runbook or architecture diagram (e.g. service interaction, data flow).
+    Licensing: No project license is specified in repo; add LICENSE.
+    Multi-node / Scaling: Current design is single-instance (SQLite). For production, plan for scaling (PostgreSQL, stateless APIs) if needed.
+    Complete CI Pipeline: Provide examples for setting up CI tests and deployments.
+
+Additional Docs (suggested): A dedicated Runbook (startup, monitoring, failures) and a diagram of the service architecture would complement this README. The ui-refactor-plan folder has detailed UI specs (routes, components, tokens) that can inform a future UI design tokens document.
+
+Sources: This README is based on the current code and docs in the RauskuClaw repo. The infra/holvi directory documents secrets management, and the ui-refactor-plan shows UI/v2 design decisions.
