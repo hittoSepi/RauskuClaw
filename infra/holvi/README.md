@@ -55,8 +55,28 @@ Appin juuressa (`/opt/openclaw/.env`) kayta:
 ```dotenv
 OPENAI_ENABLED=1
 OPENAI_SECRET_ALIAS=sec://openai_api_key
-HOLVI_BASE_URL=http://localhost:8099
+# Docker compose -ymparistossa appi on kontissa:
+HOLVI_BASE_URL=http://holvi-proxy:8099
 HOLVI_PROXY_TOKEN=<sama kuin infra/holvi/.env PROXY_SHARED_TOKEN>
+```
+
+Jos ajat appia hostilta ilman Dockeria, silloin `HOLVI_BASE_URL=http://127.0.0.1:8099` on oikein.
+
+### Docker-verkotus (tarkea)
+
+Jotta appi-kontit (`rauskuclaw-api`, `rauskuclaw-worker`) tavoittavat `holvi-proxy`-palvelun nimella `holvi-proxy`,
+niiden tulee olla samassa Docker-verkossa (`holvi_holvi_net`).
+
+Varmistus:
+
+```bash
+docker ps --format 'table {{.Names}}\t{{.Networks}}'
+```
+
+Jos verkotus ei nay oikein, kaynnista appi-kontit uudelleen:
+
+```bash
+docker compose up -d --force-recreate rauskuclaw-api rauskuclaw-worker
 ```
 
 Huom:
@@ -115,7 +135,6 @@ Onnistunut vastaus:
 - Body-kokoraja (`MAX_BODY_BYTES`)
 - In-memory token bucket rate limit (`RATE_LIMIT_CAPACITY`, `RATE_LIMIT_REFILL_RATE`)
 - Timeoutit:
-  - connect timeout (`CONNECT_TIMEOUT_MS`)
   - total request timeout (`REQUEST_TIMEOUT_MS`)
 - Audit-loki redaktoi tokenit/header-arvot fingerprint-muotoon
 
@@ -131,6 +150,10 @@ Onnistunut vastaus:
   - `INFISICAL_SERVICE_TOKEN`, `INFISICAL_PROJECT_ID` tai Infisical endpoint/malli ei vastaa odotettua
 - `504 request timeout`
   - ulkoinen API hidas tai timeout-arvot liian pienet
+- `PROVIDER_NETWORK` + `fetch failed` appin jobissa
+  - appi ei saa yhteytta Holviin; tarkista `HOLVI_BASE_URL` ja Docker-verkotus
+- `PROVIDER_NETWORK` + `request timeout` appin jobissa
+  - Holvi vastaa, mutta upstream API timeouttaa; nosta `REQUEST_TIMEOUT_MS` tai tarkista upstreamin vaste
 - `413 Request body too large`
   - pyynto ylittaa `MAX_BODY_BYTES`
 

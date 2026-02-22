@@ -22,6 +22,9 @@ services:
       - ./rauskuclaw.json:/config/rauskuclaw.json:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - holvi_bridge
     ports:
       # API only on localhost (host Nginx exposes it)
       - "127.0.0.1:3001:3001"
@@ -50,6 +53,9 @@ services:
       - ./rauskuclaw.json:/config/rauskuclaw.json:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - holvi_bridge
     command: ["node", "worker-only.js"]
 
   rauskuclaw-ollama:
@@ -81,3 +87,8 @@ services:
 
 volumes:
   ollama_data:
+
+networks:
+  holvi_bridge:
+    external: true
+    name: holvi_holvi_net

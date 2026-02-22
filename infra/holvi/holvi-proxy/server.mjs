@@ -16,7 +16,6 @@ const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || "262144"); // 256KB 
 const RATE_LIMIT_CAPACITY = Number(process.env.RATE_LIMIT_CAPACITY || "100");
 const RATE_LIMIT_REFILL_RATE = Number(process.env.RATE_LIMIT_REFILL_RATE || "10");
 const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || "30000");
-const CONNECT_TIMEOUT_MS = Number(process.env.CONNECT_TIMEOUT_MS || "5000");
 const BIND_HOST = process.env.HOLVI_BIND || "0.0.0.0";
 
 if (!PROXY_SHARED_TOKEN) throw new Error("PROXY_SHARED_TOKEN missing");
@@ -94,8 +93,6 @@ async function getSecretFromInfisical(secretName) {
     throw new Error("Infisical returned non-JSON response");
   }
 
-  console.log(data.secrets)
-
   // v3 raw returns { secrets: [...] }
   const first = Array.isArray(data.secrets) ? data.secrets[0] : null;
   const value = first?.value ?? first?.secretValue ?? first?.secret?.value;
@@ -171,9 +168,10 @@ async function handleProxyHttp(req, res) {
   if (usage === "x-api-key") headers["x-api-key"] = real;
   else headers["authorization"] = `Bearer ${real}`;
 
-  // Fetch with timeout
+  // Fetch with request timeout.
+  // NOTE: connect-timeout must not share this same abort signal, otherwise
+  // long-running upstream inference responses are killed too early.
   const controller = new AbortController();
-  const connectTimer = setTimeout(() => controller.abort(), CONNECT_TIMEOUT_MS);
   const totalTimer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   try {
@@ -184,7 +182,6 @@ async function handleProxyHttp(req, res) {
       signal: controller.signal
     });
 
-    clearTimeout(connectTimer);
     clearTimeout(totalTimer);
 
     const text = await out.text();
@@ -213,7 +210,6 @@ async function handleProxyHttp(req, res) {
       body: text,
     });
   } catch (e) {
-    clearTimeout(connectTimer);
     clearTimeout(totalTimer);
 
     if (e.name === 'AbortError') {
