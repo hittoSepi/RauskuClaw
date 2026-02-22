@@ -108,6 +108,338 @@ function readRuntimeToolsOverrides() {
   return normalized;
 }
 
+const AGENT_TOOL_SPECS = [
+  {
+    fnName: "data_file_read",
+    jobType: "data.file_read",
+    description: "Read a UTF-8 text file from workspace.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Workspace-relative file path." },
+        max_bytes: { type: "integer", minimum: 512, maximum: 1048576 }
+      },
+      required: ["path"],
+      additionalProperties: false
+    }
+  },
+  {
+    fnName: "data_write_file",
+    jobType: "data.write_file",
+    description: "Write or patch a UTF-8 file in workspace.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        mode: { type: "string", enum: ["replace", "append", "prepend", "insert_at", "replace_range"] },
+        content: { type: "string" },
+        content_base64: { type: "string" },
+        offset: { type: "integer", minimum: 0 },
+        start: { type: "integer", minimum: 0 },
+        end: { type: "integer", minimum: 0 },
+        dry_run: { type: "boolean" },
+        create_if_missing: { type: "boolean" },
+        mkdir_p: { type: "boolean" },
+        expected_sha256: { type: "string" },
+        max_bytes: { type: "integer", minimum: 512, maximum: 10485760 }
+      },
+      required: ["path"],
+      additionalProperties: false
+    }
+  },
+  {
+    fnName: "tools_file_search",
+    jobType: "tools.file_search",
+    description: "Search files by path/name under workspace.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        path: { type: "string" },
+        max_results: { type: "integer", minimum: 1, maximum: 200 },
+        include_hidden: { type: "boolean" }
+      },
+      required: ["query"],
+      additionalProperties: false
+    }
+  },
+  {
+    fnName: "tools_find_in_files",
+    jobType: "tools.find_in_files",
+    description: "Search text content from files under workspace.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        path: { type: "string" },
+        files: { type: "array", items: { type: "string" }, maxItems: 500 },
+        regex: { type: "boolean" },
+        case_sensitive: { type: "boolean" },
+        include_hidden: { type: "boolean" },
+        max_results: { type: "integer", minimum: 1, maximum: 500 }
+      },
+      required: ["query"],
+      additionalProperties: false
+    }
+  },
+  {
+    fnName: "tools_web_search",
+    jobType: "tools.web_search",
+    description: "Run a web search query.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        max_results: { type: "integer", minimum: 1, maximum: 20 },
+        provider: { type: "string", enum: ["duckduckgo", "brave"] }
+      },
+      required: ["query"],
+      additionalProperties: false
+    }
+  },
+  {
+    fnName: "data_fetch",
+    jobType: "data.fetch",
+    description: "Fetch allowlisted HTTPS URL content.",
+    parameters: {
+      type: "object",
+      properties: {
+        url: { type: "string" },
+        timeout_ms: { type: "integer", minimum: 200, maximum: 120000 },
+        max_bytes: { type: "integer", minimum: 512, maximum: 1048576 }
+      },
+      required: ["url"],
+      additionalProperties: false
+    }
+  },
+  {
+    fnName: "tool_exec",
+    jobType: "tool.exec",
+    description: "Execute an allowlisted command.",
+    parameters: {
+      type: "object",
+      properties: {
+        command: { type: "string" },
+        args: { type: "array", items: { type: "string" }, maxItems: 100 },
+        timeout_ms: { type: "integer", minimum: 100, maximum: 120000 }
+      },
+      required: ["command"],
+      additionalProperties: false
+    }
+  },
+  {
+    fnName: "workflow_run",
+    jobType: "workflow.run",
+    description: "Execute a predefined workflow from workspace/workflows.",
+    parameters: {
+      type: "object",
+      properties: {
+        workflow: { type: "string" },
+        workflow_file: { type: "string" },
+        params: { type: "object" },
+        queue: { type: "string" }
+      },
+      required: ["workflow"],
+      additionalProperties: false
+    }
+  }
+];
+const AGENT_TOOL_BY_FN = new Map(AGENT_TOOL_SPECS.map((x) => [x.fnName, x]));
+
+function envFlagEnabled(name, fallback = false) {
+  const raw = String(process.env[String(name || "")] || "").trim().toLowerCase();
+  if (!raw) return fallback;
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+function isRuntimeEnabledForAgentTool(spec, runtimeTools) {
+  if (!spec || !spec.jobType) return false;
+  if (spec.jobType === "tool.exec") {
+    const enabledEnv = String(getConfig("handlers.exec.enabled_env", "TOOL_EXEC_ENABLED"));
+    if (typeof runtimeTools?.tool_exec?.enabled === "boolean") return runtimeTools.tool_exec.enabled;
+    return envFlagEnabled(enabledEnv, false);
+  }
+  if (spec.jobType === "data.fetch") {
+    const enabledEnv = String(getConfig("handlers.data_fetch.enabled_env", "DATA_FETCH_ENABLED"));
+    if (typeof runtimeTools?.data_fetch?.enabled === "boolean") return runtimeTools.data_fetch.enabled;
+    return envFlagEnabled(enabledEnv, false);
+  }
+  if (spec.jobType === "tools.web_search") {
+    const enabledEnv = String(getConfig("handlers.web_search.enabled_env", "WEB_SEARCH_ENABLED"));
+    if (typeof runtimeTools?.web_search?.enabled === "boolean") return runtimeTools.web_search.enabled;
+    return envFlagEnabled(enabledEnv, false);
+  }
+  return true;
+}
+
+function buildAgentFunctionTools(runtimeTools) {
+  const rows = db.prepare(`SELECT name, enabled FROM job_types WHERE enabled = 1`).all();
+  const enabled = new Set(
+    (Array.isArray(rows) ? rows : [])
+      .map((r) => String(r?.name || "").trim())
+      .filter(Boolean)
+  );
+  const tools = [];
+  for (const spec of AGENT_TOOL_SPECS) {
+    if (!enabled.has(spec.jobType)) continue;
+    if (!isRuntimeEnabledForAgentTool(spec, runtimeTools)) continue;
+    tools.push({
+      type: "function",
+      function: {
+        name: spec.fnName,
+        description: spec.description,
+        parameters: spec.parameters
+      }
+    });
+  }
+  return tools;
+}
+
+function normalizeToolCallName(raw) {
+  return String(raw || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function parseToolCallArguments(raw) {
+  if (raw == null || raw === "") return {};
+  if (typeof raw === "object" && !Array.isArray(raw)) return raw;
+  if (typeof raw !== "string") {
+    throw new Error("tool call arguments must be JSON object or string");
+  }
+  const parsed = safeJsonParse(raw);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("tool call arguments JSON must decode to object");
+  }
+  return parsed;
+}
+
+function safePreviewValue(value, maxChars = 12000) {
+  const raw = safeJsonStringify(value);
+  if (!raw) return null;
+  if (raw.length <= maxChars) return value;
+  return {
+    truncated: true,
+    bytes: Buffer.byteLength(raw, "utf8"),
+    preview: raw.slice(0, maxChars)
+  };
+}
+
+function normalizeConversationMessages(input) {
+  const src = input && typeof input === "object" ? input : {};
+  const out = [];
+  const system = String(src.system || "").trim();
+  if (system) out.push({ role: "system", content: system });
+  const sourceMessages = Array.isArray(src.messages) ? src.messages : [];
+  for (const m of sourceMessages) {
+    const role = String(m?.role || "").trim().toLowerCase();
+    if (!role) continue;
+    const msg = { role };
+    if (m && Object.prototype.hasOwnProperty.call(m, "content")) {
+      if (Array.isArray(m.content)) {
+        msg.content = m.content;
+      } else if (m.content == null) {
+        msg.content = "";
+      } else {
+        msg.content = String(m.content);
+      }
+    } else {
+      msg.content = "";
+    }
+    if (role === "assistant" && Array.isArray(m?.tool_calls) && m.tool_calls.length > 0) {
+      msg.tool_calls = m.tool_calls;
+    }
+    if (role === "tool" && m?.tool_call_id) {
+      msg.tool_call_id = String(m.tool_call_id);
+    }
+    if (m?.name) {
+      msg.name = String(m.name);
+    }
+    out.push(msg);
+  }
+  const prompt = String(src.prompt || "").trim();
+  if (prompt) out.push({ role: "user", content: prompt });
+  return out;
+}
+
+async function executeAgentToolCalls(job, toolCalls, runtimeTools) {
+  const calls = Array.isArray(toolCalls) ? toolCalls : [];
+  const toolMessages = [];
+  const toolRuns = [];
+  for (let i = 0; i < calls.length; i += 1) {
+    const call = calls[i] && typeof calls[i] === "object" ? calls[i] : {};
+    const callId = String(call?.id || `tool_call_${i + 1}`);
+    const fnName = normalizeToolCallName(call?.function?.name);
+    const spec = AGENT_TOOL_BY_FN.get(fnName);
+    const runInfo = { id: callId, function: fnName || null, job_type: spec?.jobType || null, ok: false, error: null };
+
+    let payload;
+    if (!spec) {
+      payload = {
+        ok: false,
+        error: { code: "TOOL_UNKNOWN", message: `Unknown tool function '${fnName || "unknown"}'.` }
+      };
+      runInfo.error = payload.error;
+      toolRuns.push(runInfo);
+      toolMessages.push({ role: "tool", tool_call_id: callId, name: fnName || "unknown", content: safeJsonStringify(payload) });
+      continue;
+    }
+    if (!isRuntimeEnabledForAgentTool(spec, runtimeTools)) {
+      payload = {
+        ok: false,
+        error: { code: "TOOL_DISABLED", message: `Tool '${spec.jobType}' is disabled by runtime policy.` }
+      };
+      runInfo.error = payload.error;
+      toolRuns.push(runInfo);
+      toolMessages.push({ role: "tool", tool_call_id: callId, name: spec.fnName, content: safeJsonStringify(payload) });
+      continue;
+    }
+
+    const typeRow = db.prepare(`SELECT name, enabled, handler FROM job_types WHERE name = ?`).get(spec.jobType);
+    const handlerName = String(typeRow?.handler || "");
+    if (!typeRow || !typeRow.enabled || !handlerName.startsWith("builtin:") || handlerName.startsWith("builtin:provider.") || handlerName === "builtin:memory.embed.sync") {
+      payload = {
+        ok: false,
+        error: { code: "TOOL_HANDLER_BLOCKED", message: `Tool '${spec.jobType}' handler is not allowed for agent execution.` }
+      };
+      runInfo.error = payload.error;
+      toolRuns.push(runInfo);
+      toolMessages.push({ role: "tool", tool_call_id: callId, name: spec.fnName, content: safeJsonStringify(payload) });
+      continue;
+    }
+
+    try {
+      const args = parseToolCallArguments(call?.function?.arguments);
+      const toolJob = {
+        ...job,
+        type: spec.jobType,
+        input_json: safeJsonStringify(args)
+      };
+      log(job.id, "info", "Executing agent tool call", { function: spec.fnName, job_type: spec.jobType, call_id: callId });
+      const result = await runBuiltin(toolJob, handlerName);
+      payload = { ok: true, result: safePreviewValue(result) };
+      runInfo.ok = true;
+      toolRuns.push(runInfo);
+      toolMessages.push({ role: "tool", tool_call_id: callId, name: spec.fnName, content: safeJsonStringify(payload) });
+    } catch (e) {
+      payload = {
+        ok: false,
+        error: {
+          code: String(e?.code || "TOOL_EXEC_ERROR"),
+          message: String(e?.message || e),
+          details: safePreviewValue(e?.details || null, 4000)
+        }
+      };
+      runInfo.error = payload.error;
+      toolRuns.push(runInfo);
+      toolMessages.push({ role: "tool", tool_call_id: callId, name: spec.fnName, content: safeJsonStringify(payload) });
+    }
+  }
+  return { toolMessages, toolRuns };
+}
+
 function safeJsonStringify(v) {
   return JSON.stringify(v ?? null);
 }
@@ -275,6 +607,7 @@ async function runBuiltin(job, handler) {
     const memoryWriteRequest = parseChatMemoryWriteRequest(input, job.id);
     let memoryContext = null;
     let providerInput = input;
+    const isOpenAiProvider = handler === "builtin:provider.openai.chat";
 
     if (memoryRequest) {
       try {
@@ -316,7 +649,68 @@ async function runBuiltin(job, handler) {
     }
 
     try {
-      const out = await runProviderHandler(handler, providerInput);
+      if (isOpenAiProvider && providerInput?.agent_tools === true && (!Array.isArray(providerInput.tools) || providerInput.tools.length < 1)) {
+        const autoTools = buildAgentFunctionTools(runtimeTools);
+        if (autoTools.length > 0) {
+          providerInput = {
+            ...providerInput,
+            tools: autoTools,
+            tool_choice: providerInput?.tool_choice || "auto"
+          };
+          log(job.id, "info", "Agent tool calling enabled", { tool_count: autoTools.length });
+        } else {
+          log(job.id, "warn", "Agent tool calling requested but no runtime-enabled tools available");
+        }
+      }
+
+      let out = await runProviderHandler(handler, providerInput);
+      if (isOpenAiProvider) {
+        const maxRoundsRaw = Number(envOrConfig("AGENT_TOOL_MAX_ROUNDS", "worker.agent_tool.max_rounds", 3));
+        const maxRounds = Math.max(1, Math.min(6, Number.isInteger(maxRoundsRaw) ? maxRoundsRaw : 3));
+        let rounds = 0;
+        let toolRuns = [];
+        let conversation = normalizeConversationMessages(providerInput);
+
+        while (Array.isArray(out?.tool_calls) && out.tool_calls.length > 0 && rounds < maxRounds) {
+          rounds += 1;
+          log(job.id, "info", "Provider returned tool calls", {
+            round: rounds,
+            tool_call_count: out.tool_calls.length
+          });
+          const toolExec = await executeAgentToolCalls(job, out.tool_calls, runtimeTools);
+          toolRuns = toolRuns.concat(toolExec.toolRuns);
+
+          conversation.push({
+            role: "assistant",
+            content: String(out.output_text || ""),
+            tool_calls: out.tool_calls
+          });
+          conversation.push(...toolExec.toolMessages);
+
+          providerInput = {
+            ...providerInput,
+            prompt: "",
+            system: "",
+            messages: conversation
+          };
+          out = await runProviderHandler(handler, providerInput);
+        }
+
+        if (Array.isArray(out?.tool_calls) && out.tool_calls.length > 0) {
+          log(job.id, "warn", "Stopping tool-calling loop at max rounds", {
+            max_rounds: maxRounds,
+            remaining_tool_calls: out.tool_calls.length
+          });
+        }
+        if (toolRuns.length > 0 && out && typeof out === "object") {
+          out.tool_execution = {
+            rounds,
+            max_rounds: maxRounds,
+            call_count: toolRuns.length,
+            calls: toolRuns
+          };
+        }
+      }
       if (memoryContext && out && typeof out === "object") {
         out.memory_context = {
           scope: memoryContext.request.scope,

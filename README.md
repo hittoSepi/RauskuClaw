@@ -394,6 +394,7 @@ If no auth keys are configured and `API_AUTH_DISABLED` is not `1`, API returns `
 |---|---|---|
 | `GET` | `/health` | Public health check |
 | `GET` | `/v1/ping` | Auth check / API liveness |
+| `POST` | `/v1/auth/sse-token` | Mint short-lived SSE auth token (for EventSource query auth) |
 | `GET` | `/v1/runtime/providers` | Provider runtime status (read role gets redacted shape) |
 | `GET` | `/v1/runtime/handlers` | Built-in handler runtime guardrails/status (read role gets redacted shape) |
 | `GET` | `/v1/ui-prefs` | Load persisted UI preferences by scope |
@@ -489,7 +490,8 @@ Workspace panel in `/chat` supports:
   - local dev override: set `API_AUTH_DISABLED=1` only in trusted environments.
 - SSE authentication:
   - browser `EventSource` cannot send custom headers.
-  - `/v1/jobs/:id/stream` accepts `api_key` query parameter for UI compatibility.
+  - preferred flow: `POST /v1/auth/sse-token` with header auth, then pass short-lived token as query param to `/v1/jobs/:id/stream`.
+  - legacy fallback remains supported: `/v1/jobs/:id/stream?api_key=...`.
 - Callback delivery:
   - controlled by `callbacks.enabled` in `rauskuclaw.json` (default `true`)
   - worker posts to `callback_url` after completion.
@@ -614,16 +616,3 @@ RauskuClaw includes a Model Context Protocol (MCP) server for AI assistant integ
 
 ## Roadmap Link
 See [`PLAN.md`](./PLAN.md) for phased implementation milestones and acceptance criteria.
-
-## Inspiration Sources
-- https://docs.rauskuclaw.ai/concepts/architecture
-- https://docs.rauskuclaw.ai/tools
-- https://docs.rauskuclaw.ai/providers
-- https://docs.rauskuclaw.ai/reference/AGENTS.default
-- https://docs.rauskuclaw.ai/reference/templates/IDENTITY
-- https://docs.rauskuclaw.ai/reference/templates/AGENTS
-- https://docs.rauskuclaw.ai/reference/templates/BOOTSTRAP
-- https://docs.rauskuclaw.ai/reference/templates/SOUL
-- https://docs.rauskuclaw.ai/reference/templates/TOOLS
-- https://docs.rauskuclaw.ai/reference/templates/USER
-- https://docs.rauskuclaw.ai/reference/templates/HEARTBEAT

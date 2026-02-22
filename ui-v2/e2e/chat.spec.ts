@@ -20,6 +20,50 @@ async function interceptWhoami(page: Page, response: { status: number; body: unk
   })
 }
 
+async function interceptChatPreflight(page: Page) {
+  await page.route('**/v1/job-types', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        types: [
+          { name: 'ai.chat.generate', enabled: true },
+          { name: 'codex.chat.generate', enabled: true },
+        ],
+      }),
+    })
+  })
+
+  await page.route('**/v1/runtime/providers', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        providers: {
+          openai: { enabled: true },
+          codex: { enabled: true },
+        },
+      }),
+    })
+  })
+}
+
+async function interceptSseToken(page: Page) {
+  await page.route('**/v1/auth/sse-token', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        token: 'test-sse-token-chat',
+        token_param: 'stream_token',
+      }),
+    })
+  })
+}
+
 test.beforeEach(async ({ page }) => {
   // Close inspector panel to avoid blocking clicks
   await page.addInitScript(() => {
@@ -36,6 +80,8 @@ test.beforeEach(async ({ page }) => {
     status: 200,
     body: { auth: { role: 'admin', queue_allowlist: [] } },
   })
+  await interceptChatPreflight(page)
+  await interceptSseToken(page)
 
   // Mock /v1/jobs POST endpoint - return job ID
   await page.route('**/v1/jobs', async (route) => {

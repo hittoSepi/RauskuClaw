@@ -53,6 +53,8 @@ export interface SendOptions {
 // ============================================
 
 const STORAGE_KEY = 'oc_chat_v1'
+const PENDING_RECOVERY_STALE_MS = 90_000
+const MEMORY_SCOPE_MAX = 80
 
 // ============================================
 // Stream Tracking (outside store, not reactive)
@@ -112,6 +114,27 @@ function createThrottledPersist(persistFn: () => void) {
       timer = null // Clear timer ref after persist
     }, 250)
   }
+}
+
+function parseIsoMs(value: string | undefined): number {
+  if (!value) return 0
+  const ms = Date.parse(value)
+  return Number.isFinite(ms) ? ms : 0
+}
+
+function sanitizeScopeToken(value: string): string {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9._:-]+/g, '-')
+    .replace(/[-._:]{2,}/g, '-')
+    .replace(/^[-._:]+|[-._:]+$/g, '')
+  return normalized || 'default'
+}
+
+function buildProjectChatMemoryScope(projectId: string): string {
+  const token = sanitizeScopeToken(projectId)
+  const scope = `project.${token}.chat`
+  return scope.length <= MEMORY_SCOPE_MAX ? scope : scope.slice(0, MEMORY_SCOPE_MAX)
 }
 
 // ============================================
@@ -245,9 +268,22 @@ export const useChatStore = defineStore('chat', () => {
         }))
 
       // Create chat job
+      const memoryScope = buildProjectChatMemoryScope(projectId)
       const jobId = await chatJobs.createChatJob({
         prompt: text,
         messages: priorHistory,
+        memory: {
+          scope: memoryScope,
+          top_k: 8,
+          required: false,
+        },
+        memoryWrite: {
+          scope: memoryScope,
+          key: 'chat.reply.latest',
+          required: false,
+          tags: ['chat', 'ui-v2'],
+        },
+        agentTools: true,
         jobType: options.jobType,
       })
 
@@ -277,12 +313,56 @@ export const useChatStore = defineStore('chat', () => {
         activeStreams.delete(projectId)
       }
 
+      function applyTerminalJobResult(job: chatJobs.BackendJob): void {
+        const finalMsgIndex = projects.value[projectId]!.messages.findIndex(
+          (m) => m.id === assistantMessage.id
+        )
+        if (finalMsgIndex === -1) return
+
+        const currentMsg = projects.value[projectId]!.messages[finalMsgIndex]
+        if (!currentMsg) return
+
+        if (job.status === 'succeeded') {
+          const assistantText = chatJobs.parseAssistantText(job.result)
+          projects.value[projectId]!.messages[finalMsgIndex] = {
+            ...currentMsg,
+            content: assistantText,
+            status: 'success',
+          }
+        } else if (job.status === 'failed') {
+          projects.value[projectId]!.messages[finalMsgIndex] = {
+            ...currentMsg,
+            content: 'The request failed. Please try again.',
+            status: 'error',
+            error: typeof job.error === 'string' ? job.error : 'Unknown error',
+          }
+        } else if (job.status === 'cancelled') {
+          projects.value[projectId]!.messages[finalMsgIndex] = {
+            ...currentMsg,
+            content: 'The request was cancelled.',
+            status: 'error',
+            error: 'Job cancelled',
+          }
+        }
+      }
+
       // Try streaming first, fall back to polling on error
       // Track if we received at least one job_update to preserve 'streaming' status on fallback
       let receivedJobUpdate = false
       let shouldPollInstead = false
       const authStore = useAuthStore()
       const apiKey = authStore.getApiKey()
+      let streamToken: string | null = null
+      let streamTokenParam = 'stream_token'
+
+      try {
+        const issued = await chatJobs.createSseStreamToken(jobId)
+        streamToken = issued.token
+        streamTokenParam = issued.tokenParam
+      } catch (tokenErr) {
+        // Backward-compatible fallback to legacy api_key query auth.
+        console.warn('[chatStore] SSE token mint failed, falling back to api_key query auth:', tokenErr)
+      }
 
       try {
         const streamHandle = chatJobs.streamJob(
@@ -339,7 +419,9 @@ export const useChatStore = defineStore('chat', () => {
           },
         },
         {
-          apiKey,
+          streamToken: streamToken || undefined,
+          streamTokenParam,
+          apiKey: streamToken ? undefined : apiKey,
           firstEventTimeout: options.streamFirstEventTimeout ?? 3000,
         })
 
@@ -357,6 +439,31 @@ export const useChatStore = defineStore('chat', () => {
           // Stream failed, fall back to polling
           throw new Error('Stream failed, falling back to polling')
         }
+
+        // Stream can stall in some proxy/browser combinations.
+        // Keep a background polling reconciler so terminal job state reaches UI without refresh.
+        void (async () => {
+          try {
+            const pollTimeoutMs = options.pollTimeoutMs ?? 65000
+            const job = await withTimeout(
+              chatJobs.pollJobUntilComplete(jobId, {
+                interval: options.pollInterval ?? 1000,
+                maxAttempts: options.maxPollAttempts ?? 60,
+              }),
+              pollTimeoutMs,
+              `Chat request timed out after ${pollTimeoutMs}ms`
+            )
+
+            const latest = projects.value[projectId]!.messages.find((m) => m.id === assistantMessage.id)
+            if (!latest) return
+            if (latest.status === 'success' || latest.status === 'error') return
+
+            applyTerminalJobResult(job)
+            throttledPersist(true)
+          } catch {
+            // Best-effort reconciler: stream/onError path already handles primary UX.
+          }
+        })()
       } catch (streamError) {
         // Either streamJob() threw or stream failed immediately
         // Fall back to regular polling
@@ -381,36 +488,7 @@ export const useChatStore = defineStore('chat', () => {
         )
 
         // Handle terminal states
-        const finalMsgIndex = projects.value[projectId]!.messages.findIndex(
-          (m) => m.id === assistantMessage.id
-        )
-        if (finalMsgIndex !== -1) {
-          const currentMsg = projects.value[projectId]!.messages[finalMsgIndex]
-          if (!currentMsg) return
-
-          if (job.status === 'succeeded') {
-            const assistantText = chatJobs.parseAssistantText(job.result)
-            projects.value[projectId]!.messages[finalMsgIndex] = {
-              ...currentMsg,
-              content: assistantText,
-              status: 'success',
-            }
-          } else if (job.status === 'failed') {
-            projects.value[projectId]!.messages[finalMsgIndex] = {
-              ...currentMsg,
-              content: 'The request failed. Please try again.',
-              status: 'error',
-              error: typeof job.error === 'string' ? job.error : 'Unknown error',
-            }
-          } else if (job.status === 'cancelled') {
-            projects.value[projectId]!.messages[finalMsgIndex] = {
-              ...currentMsg,
-              content: 'The request was cancelled.',
-              status: 'error',
-              error: 'Job cancelled',
-            }
-          }
-        }
+        applyTerminalJobResult(job)
       }
 
       // Clean up stream handle if polling fallback completed
@@ -483,6 +561,104 @@ export const useChatStore = defineStore('chat', () => {
     activeStreams.clear()
   }
 
+  async function recoverPendingMessages(projectId: string): Promise<void> {
+    ensureProject(projectId)
+    const state = projects.value[projectId]
+    if (!state) return
+
+    const nowMs = Date.now()
+    let changed = false
+
+    for (let i = 0; i < state.messages.length; i++) {
+      const msg = state.messages[i]
+      if (!msg || msg.role !== 'assistant') continue
+      if (msg.status !== 'pending' && msg.status !== 'streaming') continue
+
+      const ageMs = Math.max(0, nowMs - parseIsoMs(msg.createdAt))
+      const isStale = ageMs > PENDING_RECOVERY_STALE_MS
+      const hasLiveStream = activeStreams.has(projectId)
+
+      // Fresh pending with active stream can continue normally.
+      if (!isStale && hasLiveStream) continue
+
+      // If no job id, stale pending cannot recover -> mark as error.
+      if (!msg.jobId) {
+        if (isStale) {
+          state.messages[i] = {
+            ...msg,
+            status: 'error',
+            content: msg.content || 'Previous request got stuck. Please try again.',
+            error: msg.error || 'stale_pending_without_job_id',
+          }
+          changed = true
+        }
+        continue
+      }
+
+      try {
+        const job = await chatJobs.getJob(msg.jobId, 5000)
+        const current = state.messages[i]
+        if (!current) continue
+
+        if (job.status === 'succeeded') {
+          state.messages[i] = {
+            ...current,
+            content: chatJobs.parseAssistantText(job.result),
+            status: 'success',
+          }
+          changed = true
+          continue
+        }
+
+        if (job.status === 'failed') {
+          state.messages[i] = {
+            ...current,
+            content: 'The request failed. Please try again.',
+            status: 'error',
+            error: typeof job.error === 'string' ? job.error : 'Unknown error',
+          }
+          changed = true
+          continue
+        }
+
+        if (job.status === 'cancelled') {
+          state.messages[i] = {
+            ...current,
+            content: 'The request was cancelled.',
+            status: 'error',
+            error: 'Job cancelled',
+          }
+          changed = true
+          continue
+        }
+
+        // queued/running: if stale and no active stream, unlock UI by marking stale error.
+        if (isStale && !hasLiveStream) {
+          state.messages[i] = {
+            ...current,
+            status: 'error',
+            content: current.content || 'Previous request is stale. Please retry.',
+            error: 'stale_pending_job',
+          }
+          changed = true
+        }
+      } catch {
+        if (!isStale) continue
+        const current = state.messages[i]
+        if (!current) continue
+        state.messages[i] = {
+          ...current,
+          status: 'error',
+          content: current.content || 'Previous request got stuck. Please try again.',
+          error: current.error || 'pending_recovery_failed',
+        }
+        changed = true
+      }
+    }
+
+    if (changed) persist()
+  }
+
   // Hydrate from localStorage on store creation
   hydrate()
 
@@ -506,5 +682,6 @@ export const useChatStore = defineStore('chat', () => {
     deleteMessage,
     cancelActiveStream,
     cancelAllStreams,
+    recoverPendingMessages,
   }
 })

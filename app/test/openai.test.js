@@ -333,3 +333,136 @@ test("runOpenAiChat maps timeout and HTTP failures to provider codes", async () 
     );
   });
 });
+
+test("runOpenAiChat forces tool_choice=auto for z.ai/glm providers", async () => {
+  await withEnv({
+    OPENAI_ENABLED: "1",
+    OPENAI_API_KEY: "test-key",
+    OPENAI_MODEL: "glm-5",
+    OPENAI_BASE_URL: "https://api.z.ai",
+    OPENAI_CHAT_COMPLETIONS_PATH: "/api/paas/v4/chat/completions",
+    OPENAI_TIMEOUT_MS: "1000"
+  }, async () => {
+    let seenPayload = null;
+    await runOpenAiChat(
+      {
+        prompt: "hello",
+        tools: [{
+          type: "function",
+          function: {
+            name: "data_file_read",
+            description: "Read a file",
+            parameters: { type: "object", properties: {}, additionalProperties: false }
+          }
+        }],
+        tool_choice: "required"
+      },
+      {
+        agentsMdContent: null,
+        identityMdContent: null,
+        soulMdContent: null,
+        userMdContent: null,
+        memoryMdContent: null,
+        toolsReadmeContent: null,
+        workflowsYamlContent: null,
+        workflowToolMdContent: null,
+        fetchImpl: async (_url, init) => {
+          seenPayload = JSON.parse(String(init?.body || "{}"));
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+              id: "cmpl_zai",
+              model: "glm-5",
+              choices: [{ finish_reason: "stop", message: { content: "ok" } }],
+              usage: {}
+            })
+          };
+        }
+      }
+    );
+    assert.equal(seenPayload?.tool_choice, "auto");
+  });
+});
+
+test("runOpenAiChat warns when z.ai/glm tool_choice is not auto", async () => {
+  await withEnv({
+    OPENAI_ENABLED: "1",
+    OPENAI_API_KEY: "test-key",
+    OPENAI_MODEL: "glm-5",
+    OPENAI_BASE_URL: "https://api.z.ai",
+    OPENAI_CHAT_COMPLETIONS_PATH: "/api/paas/v4/chat/completions",
+    OPENAI_TIMEOUT_MS: "1000"
+  }, async () => {
+    const prevWarn = console.warn;
+    const seen = [];
+    console.warn = (...args) => { seen.push(args); };
+    try {
+      await runOpenAiChat(
+        {
+          prompt: "hello",
+          tools: [{
+            type: "function",
+            function: {
+              name: "data_file_read",
+              description: "Read a file",
+              parameters: { type: "object", properties: {}, additionalProperties: false }
+            }
+          }],
+          tool_choice: "required"
+        },
+        {
+          agentsMdContent: null,
+          identityMdContent: null,
+          soulMdContent: null,
+          userMdContent: null,
+          memoryMdContent: null,
+          toolsReadmeContent: null,
+          workflowsYamlContent: null,
+          workflowToolMdContent: null,
+          fetchImpl: async () => ({
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+              id: "cmpl_zai_warn",
+              model: "glm-5",
+              choices: [{ finish_reason: "stop", message: { content: "ok" } }],
+              usage: {}
+            })
+          })
+        }
+      );
+    } finally {
+      console.warn = prevWarn;
+    }
+    assert.equal(seen.length > 0, true);
+    assert.match(String(seen[0]?.[0] || ""), /tool_choice='auto' only/);
+  });
+});
+
+test("runOpenAiChat validates tool function names", async () => {
+  await withEnv({
+    OPENAI_ENABLED: "1",
+    OPENAI_API_KEY: "test-key",
+    OPENAI_MODEL: "gpt-4.1-mini",
+    OPENAI_BASE_URL: "https://example.invalid",
+    OPENAI_CHAT_COMPLETIONS_PATH: "/v1/chat/completions",
+    OPENAI_TIMEOUT_MS: "1000"
+  }, async () => {
+    await assert.rejects(
+      runOpenAiChat({
+        prompt: "hello",
+        tools: [{
+          type: "function",
+          function: {
+            name: "tools.file_search",
+            description: "Invalid dot name",
+            parameters: { type: "object", properties: {}, additionalProperties: false }
+          }
+        }],
+        tool_choice: "auto"
+      }),
+      (e) => e && e.code === "PROVIDER_INPUT"
+    );
+  });
+});

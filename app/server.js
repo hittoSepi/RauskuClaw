@@ -19,9 +19,41 @@ const {
   getLatestWorkingMemorySession
 } = require("./memory/working_memory");
 
+function sanitizeRequestUrlForLogs(rawUrl) {
+  const input = String(rawUrl || "");
+  if (!input) return "/";
+  try {
+    const u = new URL(input, "http://local.invalid");
+    // EventSource auth keys/tokens may live in query string; never write secrets to logs.
+    for (const [key] of u.searchParams.entries()) {
+      const lk = String(key || "").toLowerCase();
+      if (lk === "key" || lk.includes("token") || lk.includes("api_key") || lk.includes("apikey")) {
+        u.searchParams.set(key, "[redacted]");
+      }
+    }
+    const qs = u.searchParams.toString();
+    return `${u.pathname}${qs ? `?${qs}` : ""}`;
+  } catch {
+    return input.replace(/([?&][^=]*(?:token|api[_-]?key|key)[^=]*=)[^&]*/gi, "$1[redacted]");
+  }
+}
+
 const app = express();
 app.use(express.json({ limit: "1mb" }));
-app.use(morgan("combined"));
+app.use(morgan((tokens, req, res) => {
+  const url = sanitizeRequestUrlForLogs(req.originalUrl || req.url);
+  return [
+    tokens["remote-addr"](req, res),
+    "-",
+    tokens["remote-user"](req, res) || "-",
+    `[${tokens.date(req, res, "clf")}]`,
+    `"${tokens.method(req, res)} ${url} HTTP/${tokens["http-version"](req, res)}"`,
+    tokens.status(req, res),
+    tokens.res(req, res, "content-length") || "-",
+    `"${tokens.referrer(req, res) || "-"}"`,
+    `"${tokens["user-agent"](req, res) || "-"}"`
+  ].join(" ");
+}));
 
 const port = envIntOrConfig("PORT", "api.port", 3001);
 const workspaceRoot = path.resolve(String(envOrConfig("WORKSPACE_ROOT", "providers.codex_oss.working_directory", "/workspace")).trim() || "/workspace");
@@ -35,9 +67,12 @@ const apiAuthDisabled = process.env.API_AUTH_DISABLED != null
   : getConfig("api.auth.required", true) === false;
 const apiKeyHeader = String(envOrConfig("API_KEY_HEADER", "api.auth.header", "x-api-key")).toLowerCase();
 const sseApiKeyParam = String(envOrConfig("SSE_API_KEY_PARAM", "api.sse.query_api_key_param", "api_key"));
+const sseTokenParam = String(envOrConfig("SSE_TOKEN_PARAM", "api.sse.query_token_param", "stream_token")).trim() || "stream_token";
+const sseTokenTtlSec = Math.max(30, Math.min(1800, envIntOrConfig("SSE_TOKEN_TTL_SEC", "api.sse.token_ttl_sec", 120)));
 const memoryVectorSettings = getMemoryVectorSettings();
 const allowedAuthRoles = new Set(["admin", "read"]);
 const queueNamePattern = /^[a-z0-9._:-]{1,80}$/i;
+const sseAuthTokens = new Map();
 
 function normalizeQueueAllowlist(raw, idx) {
   if (raw == null) return null;
@@ -142,7 +177,72 @@ function findPrincipalByKey(candidate) {
   return null;
 }
 
-function authenticate(req, { allowQuery = false } = {}) {
+function clonePrincipal(principal) {
+  return {
+    name: String(principal?.name || ""),
+    role: String(principal?.role || "read"),
+    sse: Boolean(principal?.sse),
+    queue_allowlist: Array.isArray(principal?.queue_allowlist) ? principal.queue_allowlist.slice() : null
+  };
+}
+
+function cleanupExpiredSseTokens(nowMs = Date.now()) {
+  for (const [token, entry] of sseAuthTokens.entries()) {
+    if (!entry || entry.expires_at_ms <= nowMs) {
+      sseAuthTokens.delete(token);
+    }
+  }
+}
+
+function issueSseAuthToken(principal, { jobId } = {}) {
+  const basePrincipal = clonePrincipal(principal);
+  if (!basePrincipal.name) throw new Error("Cannot mint SSE token without principal");
+
+  const nowMs = Date.now();
+  cleanupExpiredSseTokens(nowMs);
+
+  const token = crypto.randomBytes(24).toString("hex");
+  const expiresAtMs = nowMs + (sseTokenTtlSec * 1000);
+  const scopedJobId = String(jobId || "").trim() || null;
+  sseAuthTokens.set(token, {
+    principal: basePrincipal,
+    expires_at_ms: expiresAtMs,
+    job_id: scopedJobId
+  });
+
+  return {
+    token,
+    token_param: sseTokenParam,
+    ttl_sec: sseTokenTtlSec,
+    expires_at: new Date(expiresAtMs).toISOString(),
+    job_id: scopedJobId
+  };
+}
+
+function findPrincipalBySseToken(rawToken, { jobId } = {}) {
+  const token = String(rawToken || "").trim();
+  if (!token) return null;
+
+  const entry = sseAuthTokens.get(token);
+  if (!entry) return null;
+
+  const nowMs = Date.now();
+  if (entry.expires_at_ms <= nowMs) {
+    sseAuthTokens.delete(token);
+    return null;
+  }
+
+  if (entry.job_id) {
+    const requestedJobId = String(jobId || "").trim();
+    if (!requestedJobId || requestedJobId !== entry.job_id) {
+      return null;
+    }
+  }
+
+  return clonePrincipal(entry.principal);
+}
+
+function authenticate(req, { allowQuery = false, sseJobId = "" } = {}) {
   if (apiAuthKeys.length < 1) {
     if (apiAuthDisabled) return { ok: true, principal: { name: "auth-disabled", role: "admin", sse: true, queue_allowlist: null } };
     return { ok: false, reason: "misconfigured" };
@@ -152,6 +252,10 @@ function authenticate(req, { allowQuery = false } = {}) {
   if (fromHeader) return { ok: true, principal: fromHeader };
 
   if (allowQuery) {
+    const sseTokenValue = req.query[sseTokenParam] ? String(req.query[sseTokenParam]) : "";
+    const fromSseToken = findPrincipalBySseToken(sseTokenValue, { jobId: sseJobId });
+    if (fromSseToken) return { ok: true, principal: fromSseToken };
+
     const queryValue = req.query[sseApiKeyParam] ? String(req.query[sseApiKeyParam]) : "";
     const fromQuery = findPrincipalByKey(queryValue);
     if (fromQuery) return { ok: true, principal: fromQuery };
@@ -187,7 +291,7 @@ function auth(req, res, next) {
 }
 
 function authSse(req, res, next) {
-  const out = authenticate(req, { allowQuery: true });
+  const out = authenticate(req, { allowQuery: true, sseJobId: String(req.params?.id || "") });
   if (!out.ok) {
     if (out.reason === "misconfigured") return authMisconfigured(res);
     return res.status(401).json({ ok: false, error: { code: "UNAUTHORIZED", message: "Unauthorized" } });
@@ -658,7 +762,12 @@ registerJobsRoutes(app, {
 
 // Auth routes
 const registerAuthRoutes = require("./routes/auth");
-registerAuthRoutes(app, { auth });
+registerAuthRoutes(app, {
+  auth,
+  issueSseAuthToken,
+  sseTokenParam,
+  sseTokenTtlSec
+});
 
 // Memory routes
 const registerMemoryRoutes = require("./routes/memory");

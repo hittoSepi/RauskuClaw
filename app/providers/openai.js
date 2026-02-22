@@ -413,35 +413,35 @@ function withAgentsMdSystemMessage(messages, options = {}, repoContext = null, s
   const parts = [];
   if (agentsMd) {
     parts.push("Repository policy from AGENTS.md (follow these instructions):");
-  //  parts.push(agentsMd.slice(0, 12000));
+    parts.push(agentsMd);
   }
   if (identityMd) {
     parts.push("Project identity from IDENTITY.md:");
-  //  parts.push(summarizeMarkdownCached(identityMd, 1600).slice(0, 6000));
+    parts.push(identityMd);
   }
   if (soulMd) {
     parts.push("Project soul from SOUL.md:");
-//    parts.push(summarizeMarkdownCached(soulMd, 1600).slice(0, 6000));
+    parts.push(soulMd);
   }
   if (userMd) {
     parts.push("User profile and preferences from USER.md:");
-  //  parts.push(userMd.slice(0, 6000));
+    parts.push(userMd);
   }
   if (toolsReadme) {
     parts.push("Tool directory index from workspace/tools/README.md:");
- //   parts.push(toolsReadme.slice(0, 8000));
+    parts.push(toolsReadme);
   }
   if (memoryMd) {
     parts.push("Working memory from rauskuAssets/MEMORY.md (important long-lived notes):");
-  //  parts.push(memoryMd.slice(0, 8000));
+    parts.push(memoryMd);
   }
   if (workflowsYaml) {
     parts.push("Workflow catalog from workspace/workflows/workflows.yaml:");
-  // parts.push(workflowsYaml.slice(0, 12000));
+    parts.push(workflowsYaml);
   }
   if (workflowToolMd) {
     parts.push("Workflow execution contract from workspace/tools/workflow.run/TOOL.md:");
-   //parts.push(workflowToolMd.slice(0, 6000));
+    parts.push(workflowToolMd);
   }
   const content = parts.join("\n\n");
   return [{ role: "system", content }, ...messages];
@@ -570,6 +570,42 @@ function buildCompletionsUrl(settings) {
   return `${settings.baseUrl}${normalizedPath}`;
 }
 
+function isZaiLikeProvider(settings, input) {
+  const baseUrl = String(settings?.baseUrl || "").trim().toLowerCase();
+  const model = String(input?.model || settings?.model || "").trim().toLowerCase();
+  return baseUrl.includes("z.ai") || model.startsWith("glm");
+}
+
+function normalizeToolChoiceValue(raw) {
+  if (typeof raw === "string") return raw.trim().toLowerCase();
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw;
+  return null;
+}
+
+function describeToolChoice(raw) {
+  if (typeof raw === "string") return raw;
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) return "object";
+  return String(raw);
+}
+
+function validateToolFunctionNames(tools) {
+  const list = Array.isArray(tools) ? tools : [];
+  const re = /^[a-zA-Z0-9_-]{1,64}$/;
+  for (const t of list) {
+    if (!t || t.type !== "function" || !t.function) continue;
+    const name = String(t.function.name || "").trim();
+    if (!name) {
+      throw createProviderError("PROVIDER_INPUT", "Tool function name is required.");
+    }
+    if (!re.test(name)) {
+      throw createProviderError(
+        "PROVIDER_INPUT",
+        `Invalid tool function name '${name}'. Use 1-64 chars: letters, numbers, '_' or '-'.`
+      );
+    }
+  }
+}
+
 async function runOpenAiChat(input, options = {}) {
   const s = options.settings || openAiSettings();
   const fetchImpl = options.fetchImpl || fetch;
@@ -619,24 +655,45 @@ async function runOpenAiChat(input, options = {}) {
   
   // Function calling support: tools and tool_choice
   if (Array.isArray(input?.tools) && input.tools.length > 0) {
+    validateToolFunctionNames(input.tools);
     payload.tools = input.tools;
   }
-  if (input?.tool_choice && typeof input.tool_choice === "string") {
-    payload.tool_choice = input.tool_choice;
+  const rawToolChoice = normalizeToolChoiceValue(input?.tool_choice);
+  if (rawToolChoice != null) {
+    const zaiLike = isZaiLikeProvider(s, input);
+    if (zaiLike) {
+      if (rawToolChoice !== "auto") {
+        console.warn(
+          "[openai] z.ai/glm provider supports tool_choice='auto' only; overriding requested tool_choice",
+          { requested: describeToolChoice(rawToolChoice) }
+        );
+      }
+      payload.tool_choice = "auto";
+    } else {
+      payload.tool_choice = rawToolChoice;
+    }
   }
 
   let data;
 
   if (useHolvi) {
     // Holvi mode: use holviHttp wrapper
-    const result = await holviHttp({
-      alias: s.secretAlias,
-      method: "POST",
-      url: completionsUrl,
-      headers: { "content-type": "application/json" },
-      body: payload,
-      timeoutMs: s.timeoutMs
-    });
+    let result;
+    try {
+      result = await holviHttp({
+        alias: s.secretAlias,
+        method: "POST",
+        url: completionsUrl,
+        headers: { "content-type": "application/json" },
+        body: payload,
+        timeoutMs: s.timeoutMs
+      });
+    } catch (e) {
+      if (e?.name === "AbortError") {
+        throw createProviderError("PROVIDER_TIMEOUT", `OpenAI request timed out after ${s.timeoutMs}ms.`);
+      }
+      throw toProviderError(e, "PROVIDER_NETWORK", "OpenAI request via holvi proxy failed");
+    }
 
     const status = result.status;
     const responseBody = typeof result.body === "string" ? result.body : "";

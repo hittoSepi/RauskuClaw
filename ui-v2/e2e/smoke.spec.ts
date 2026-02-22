@@ -20,6 +20,36 @@ async function interceptWhoami(page: Page, response: { status: number; body: unk
   })
 }
 
+async function interceptChatPreflightDefaults(page: Page) {
+  await page.route('**/v1/job-types', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        types: [
+          { name: 'ai.chat.generate', enabled: true },
+          { name: 'codex.chat.generate', enabled: true },
+        ],
+      }),
+    })
+  })
+
+  await page.route('**/v1/runtime/providers', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        providers: {
+          openai: { enabled: true },
+          codex: { enabled: true },
+        },
+      }),
+    })
+  })
+}
+
 async function getSessionStorageKey(page: Page): Promise<string | null> {
   return page.evaluate((key) => sessionStorage.getItem(key), SESSION_STORAGE_KEY)
 }
@@ -34,7 +64,11 @@ test.beforeEach(async ({ page }) => {
   // Fail fast on any unexpected API call (keeps “no backend required” true)
   await page.route('**/v1/**', async (route) => {
     const url = route.request().url()
-    if (url.includes('/v1/auth/whoami')) {
+    if (
+      url.includes('/v1/auth/whoami')
+      || url.includes('/v1/job-types')
+      || url.includes('/v1/runtime/providers')
+    ) {
       // Let the dedicated whoami handler (registered below, or overridden by a test) handle this.
       return route.fallback()
     }
@@ -58,6 +92,8 @@ test.beforeEach(async ({ page }) => {
       body: JSON.stringify({ error: 'Unauthorized' }),
     })
   })
+
+  await interceptChatPreflightDefaults(page)
 })
 
 // Test 1

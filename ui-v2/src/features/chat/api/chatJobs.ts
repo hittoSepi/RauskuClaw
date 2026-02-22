@@ -104,6 +104,8 @@ export interface CreateChatJobOptions {
   memory?: MemoryContext
   /** Optional memory write-back (pass-through) */
   memoryWrite?: MemoryWriteConfig
+  /** Enable backend-managed agent tool calling */
+  agentTools?: boolean
   /** Optional temperature (0-2 for OpenAI) */
   temperature?: number
   /** Optional max tokens */
@@ -218,6 +220,7 @@ export async function createChatJob(options: CreateChatJobOptions): Promise<stri
     system,
     memory,
     memoryWrite,
+    agentTools,
     temperature,
     maxTokens,
     jobType = 'ai.chat.generate',
@@ -237,6 +240,7 @@ export async function createChatJob(options: CreateChatJobOptions): Promise<stri
   }
   if (memory) input.memory = memory
   if (memoryWrite) input.memory_write = memoryWrite
+  if (agentTools === true) input.agent_tools = true
   if (temperature !== undefined) input.temperature = temperature
   if (maxTokens !== undefined) input.max_tokens = maxTokens
 
@@ -398,8 +402,12 @@ export interface StreamJobHandlers {
 }
 
 export interface StreamJobOptions {
-  /** API key for auth (required: EventSource can't send headers) */
-  apiKey: string
+  /** Legacy fallback auth key for EventSource query auth */
+  apiKey?: string
+  /** Preferred short-lived SSE token (minted via /v1/auth/sse-token) */
+  streamToken?: string
+  /** Query parameter name for stream token (default: stream_token) */
+  streamTokenParam?: string
   /** Timeout for first event in milliseconds (default: 3000ms) */
   firstEventTimeout?: number
 }
@@ -407,6 +415,27 @@ export interface StreamJobOptions {
 export interface StreamJobHandle {
   /** Close the stream and cleanup resources */
   close: () => void
+}
+
+export interface SseTokenPayload {
+  ok?: boolean
+  token?: string
+  token_param?: string
+}
+
+export async function createSseStreamToken(jobId: string): Promise<{ token: string; tokenParam: string }> {
+  const response = await api<SseTokenPayload>('/v1/auth/sse-token', {
+    method: 'POST',
+    body: { job_id: jobId }
+  })
+
+  const token = String(response?.token || '').trim()
+  if (!token) {
+    throw new Error('SSE token response missing token')
+  }
+
+  const tokenParam = String(response?.token_param || 'stream_token').trim() || 'stream_token'
+  return { token, tokenParam }
 }
 
 // ============================================
@@ -449,12 +478,18 @@ export function streamJob(
   handlers: StreamJobHandlers,
   options: StreamJobOptions
 ): StreamJobHandle {
-  const { apiKey, firstEventTimeout = 3000 } = options
+  const { apiKey, streamToken, streamTokenParam = 'stream_token', firstEventTimeout = 3000 } = options
 
   // Use same origin (Vite proxy handles /v1/* in dev, gateway handles it in prod)
-  // SECURITY: Never log this URL - it contains api_key in query param
+  // SECURITY: Never log this URL - it may contain auth token in query param
   const u = new URL(`/v1/jobs/${encodeURIComponent(jobId)}/stream`, window.location.origin)
-  u.searchParams.set('api_key', apiKey)
+  if (streamToken) {
+    u.searchParams.set(streamTokenParam, streamToken)
+  } else if (apiKey) {
+    u.searchParams.set('api_key', apiKey)
+  } else {
+    throw new Error('Missing stream auth credential')
+  }
   const url = u.toString()
 
   let eventSource: EventSource | null = null
@@ -463,11 +498,10 @@ export function streamJob(
 
   function startFirstEventTimer() {
     firstEventTimer = setTimeout(() => {
-      if (!isClosed && eventSource?.readyState === EventSource.CONNECTING) {
-        eventSource.close()
-        isClosed = true
-        handlers.onError?.(new Error(`Stream timeout: no event received within ${firstEventTimeout}ms`))
-      }
+      if (isClosed) return
+      eventSource?.close()
+      isClosed = true
+      handlers.onError?.(new Error(`Stream timeout: no event received within ${firstEventTimeout}ms`))
     }, firstEventTimeout)
   }
 

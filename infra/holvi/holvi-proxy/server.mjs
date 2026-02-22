@@ -94,6 +94,8 @@ async function getSecretFromInfisical(secretName) {
     throw new Error("Infisical returned non-JSON response");
   }
 
+  console.log(data.secrets)
+
   // v3 raw returns { secrets: [...] }
   const first = Array.isArray(data.secrets) ? data.secrets[0] : null;
   const value = first?.value ?? first?.secretValue ?? first?.secret?.value;
