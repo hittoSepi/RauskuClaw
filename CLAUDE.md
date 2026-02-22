@@ -3,6 +3,8 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 **Read `AGENTS.md` first**
+**Read `CLAUDE-REPORT-FORMAT-V1.md`** 
+**Read `CLAUDE-PLAN-FORMAT-V1.md`** 
 
 ## Quick Start Commands
 

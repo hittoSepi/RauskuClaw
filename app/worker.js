@@ -25,6 +25,17 @@ const { runFileSearch } = require("./handlers/file_search");
 const { runFindInFiles } = require("./handlers/find_in_files");
 const { runWorkflow } = require("./handlers/workflow_run");
 const { runWebSearch } = require("./handlers/web_search");
+const {
+  AGENT_TOOL_SPECS,
+  AGENT_TOOL_BY_FN,
+  normalizeToolCallName,
+  parseToolCallArguments,
+  buildAgentFunctionTools
+} = require("./agent_tools/specs");
+const {
+  createRuntimeToolsReader,
+  isRuntimeEnabledForAgentTool
+} = require("./agent_tools/policy");
 
 const workerIdEnvName = String(getConfig("worker.worker_id_source.env", "WORKER_ID"));
 const workerId = process.env[workerIdEnvName] || os.hostname();
@@ -58,263 +69,8 @@ function safeJsonParse(s) {
   try { return JSON.parse(s); } catch { return null; }
 }
 
-function splitCsvListOrArray(value) {
-  if (Array.isArray(value)) {
-    return value.map((x) => String(x || "").trim()).filter(Boolean);
-  }
-  return splitCsv(String(value || ""));
-}
-
-function normalizeRuntimeToolsOverrides(raw) {
-  const src = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
-  const toolExec = src.tool_exec && typeof src.tool_exec === "object" ? src.tool_exec : {};
-  const dataFetch = src.data_fetch && typeof src.data_fetch === "object" ? src.data_fetch : {};
-  const webSearch = src.web_search && typeof src.web_search === "object" ? src.web_search : {};
-
-  const out = {
-    tool_exec: {},
-    data_fetch: {},
-    web_search: {}
-  };
-
-  if (typeof toolExec.enabled === "boolean") out.tool_exec.enabled = toolExec.enabled;
-  if (toolExec.allowlist != null) out.tool_exec.allowlist = splitCsvListOrArray(toolExec.allowlist);
-  if (Number.isInteger(Number(toolExec.timeout_ms))) out.tool_exec.timeout_ms = Number(toolExec.timeout_ms);
-
-  if (typeof dataFetch.enabled === "boolean") out.data_fetch.enabled = dataFetch.enabled;
-  if (dataFetch.allowlist != null) out.data_fetch.allowlist = splitCsvListOrArray(dataFetch.allowlist);
-  if (Number.isInteger(Number(dataFetch.timeout_ms))) out.data_fetch.timeout_ms = Number(dataFetch.timeout_ms);
-  if (Number.isInteger(Number(dataFetch.max_bytes))) out.data_fetch.max_bytes = Number(dataFetch.max_bytes);
-
-  if (typeof webSearch.enabled === "boolean") out.web_search.enabled = webSearch.enabled;
-  if (typeof webSearch.provider === "string") out.web_search.provider = String(webSearch.provider || "").trim().toLowerCase();
-  if (Number.isInteger(Number(webSearch.timeout_ms))) out.web_search.timeout_ms = Number(webSearch.timeout_ms);
-  if (Number.isInteger(Number(webSearch.max_results))) out.web_search.max_results = Number(webSearch.max_results);
-  if (typeof webSearch.base_url === "string") out.web_search.base_url = String(webSearch.base_url || "").trim();
-  if (typeof webSearch.brave_api_key === "string") out.web_search.brave_api_key = String(webSearch.brave_api_key || "").trim();
-  if (typeof webSearch.brave_endpoint === "string") out.web_search.brave_endpoint = String(webSearch.brave_endpoint || "").trim();
-
-  return out;
-}
-
-let runtimeToolsOverridesCache = { at: 0, value: { tool_exec: {}, data_fetch: {}, web_search: {} } };
-function readRuntimeToolsOverrides() {
-  const now = Date.now();
-  if (now - runtimeToolsOverridesCache.at < 1500) return runtimeToolsOverridesCache.value;
-  const row = db.prepare(`SELECT value_json FROM ui_prefs WHERE scope = ?`).get("runtime_tools");
-  const parsed = row?.value_json ? safeJsonParse(row.value_json) : null;
-  const normalized = normalizeRuntimeToolsOverrides(parsed || {});
-  runtimeToolsOverridesCache = { at: now, value: normalized };
-  return normalized;
-}
-
-const AGENT_TOOL_SPECS = [
-  {
-    fnName: "data_file_read",
-    jobType: "data.file_read",
-    description: "Read a UTF-8 text file from workspace.",
-    parameters: {
-      type: "object",
-      properties: {
-        path: { type: "string", description: "Workspace-relative file path." },
-        max_bytes: { type: "integer", minimum: 512, maximum: 1048576 }
-      },
-      required: ["path"],
-      additionalProperties: false
-    }
-  },
-  {
-    fnName: "data_write_file",
-    jobType: "data.write_file",
-    description: "Write or patch a UTF-8 file in workspace.",
-    parameters: {
-      type: "object",
-      properties: {
-        path: { type: "string" },
-        mode: { type: "string", enum: ["replace", "append", "prepend", "insert_at", "replace_range"] },
-        content: { type: "string" },
-        content_base64: { type: "string" },
-        offset: { type: "integer", minimum: 0 },
-        start: { type: "integer", minimum: 0 },
-        end: { type: "integer", minimum: 0 },
-        dry_run: { type: "boolean" },
-        create_if_missing: { type: "boolean" },
-        mkdir_p: { type: "boolean" },
-        expected_sha256: { type: "string" },
-        max_bytes: { type: "integer", minimum: 512, maximum: 10485760 }
-      },
-      required: ["path"],
-      additionalProperties: false
-    }
-  },
-  {
-    fnName: "tools_file_search",
-    jobType: "tools.file_search",
-    description: "Search files by path/name under workspace.",
-    parameters: {
-      type: "object",
-      properties: {
-        query: { type: "string" },
-        path: { type: "string" },
-        max_results: { type: "integer", minimum: 1, maximum: 200 },
-        include_hidden: { type: "boolean" }
-      },
-      required: ["query"],
-      additionalProperties: false
-    }
-  },
-  {
-    fnName: "tools_find_in_files",
-    jobType: "tools.find_in_files",
-    description: "Search text content from files under workspace.",
-    parameters: {
-      type: "object",
-      properties: {
-        query: { type: "string" },
-        path: { type: "string" },
-        files: { type: "array", items: { type: "string" }, maxItems: 500 },
-        regex: { type: "boolean" },
-        case_sensitive: { type: "boolean" },
-        include_hidden: { type: "boolean" },
-        max_results: { type: "integer", minimum: 1, maximum: 500 }
-      },
-      required: ["query"],
-      additionalProperties: false
-    }
-  },
-  {
-    fnName: "tools_web_search",
-    jobType: "tools.web_search",
-    description: "Run a web search query.",
-    parameters: {
-      type: "object",
-      properties: {
-        query: { type: "string" },
-        max_results: { type: "integer", minimum: 1, maximum: 20 },
-        provider: { type: "string", enum: ["duckduckgo", "brave"] }
-      },
-      required: ["query"],
-      additionalProperties: false
-    }
-  },
-  {
-    fnName: "data_fetch",
-    jobType: "data.fetch",
-    description: "Fetch allowlisted HTTPS URL content.",
-    parameters: {
-      type: "object",
-      properties: {
-        url: { type: "string" },
-        timeout_ms: { type: "integer", minimum: 200, maximum: 120000 },
-        max_bytes: { type: "integer", minimum: 512, maximum: 1048576 }
-      },
-      required: ["url"],
-      additionalProperties: false
-    }
-  },
-  {
-    fnName: "tool_exec",
-    jobType: "tool.exec",
-    description: "Execute an allowlisted command.",
-    parameters: {
-      type: "object",
-      properties: {
-        command: { type: "string" },
-        args: { type: "array", items: { type: "string" }, maxItems: 100 },
-        timeout_ms: { type: "integer", minimum: 100, maximum: 120000 }
-      },
-      required: ["command"],
-      additionalProperties: false
-    }
-  },
-  {
-    fnName: "workflow_run",
-    jobType: "workflow.run",
-    description: "Execute a predefined workflow from workspace/workflows.",
-    parameters: {
-      type: "object",
-      properties: {
-        workflow: { type: "string" },
-        workflow_file: { type: "string" },
-        params: { type: "object" },
-        queue: { type: "string" }
-      },
-      required: ["workflow"],
-      additionalProperties: false
-    }
-  }
-];
-const AGENT_TOOL_BY_FN = new Map(AGENT_TOOL_SPECS.map((x) => [x.fnName, x]));
-
-function envFlagEnabled(name, fallback = false) {
-  const raw = String(process.env[String(name || "")] || "").trim().toLowerCase();
-  if (!raw) return fallback;
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
-}
-
-function isRuntimeEnabledForAgentTool(spec, runtimeTools) {
-  if (!spec || !spec.jobType) return false;
-  if (spec.jobType === "tool.exec") {
-    const enabledEnv = String(getConfig("handlers.exec.enabled_env", "TOOL_EXEC_ENABLED"));
-    if (typeof runtimeTools?.tool_exec?.enabled === "boolean") return runtimeTools.tool_exec.enabled;
-    return envFlagEnabled(enabledEnv, false);
-  }
-  if (spec.jobType === "data.fetch") {
-    const enabledEnv = String(getConfig("handlers.data_fetch.enabled_env", "DATA_FETCH_ENABLED"));
-    if (typeof runtimeTools?.data_fetch?.enabled === "boolean") return runtimeTools.data_fetch.enabled;
-    return envFlagEnabled(enabledEnv, false);
-  }
-  if (spec.jobType === "tools.web_search") {
-    const enabledEnv = String(getConfig("handlers.web_search.enabled_env", "WEB_SEARCH_ENABLED"));
-    if (typeof runtimeTools?.web_search?.enabled === "boolean") return runtimeTools.web_search.enabled;
-    return envFlagEnabled(enabledEnv, false);
-  }
-  return true;
-}
-
-function buildAgentFunctionTools(runtimeTools) {
-  const rows = db.prepare(`SELECT name, enabled FROM job_types WHERE enabled = 1`).all();
-  const enabled = new Set(
-    (Array.isArray(rows) ? rows : [])
-      .map((r) => String(r?.name || "").trim())
-      .filter(Boolean)
-  );
-  const tools = [];
-  for (const spec of AGENT_TOOL_SPECS) {
-    if (!enabled.has(spec.jobType)) continue;
-    if (!isRuntimeEnabledForAgentTool(spec, runtimeTools)) continue;
-    tools.push({
-      type: "function",
-      function: {
-        name: spec.fnName,
-        description: spec.description,
-        parameters: spec.parameters
-      }
-    });
-  }
-  return tools;
-}
-
-function normalizeToolCallName(raw) {
-  return String(raw || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-}
-
-function parseToolCallArguments(raw) {
-  if (raw == null || raw === "") return {};
-  if (typeof raw === "object" && !Array.isArray(raw)) return raw;
-  if (typeof raw !== "string") {
-    throw new Error("tool call arguments must be JSON object or string");
-  }
-  const parsed = safeJsonParse(raw);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("tool call arguments JSON must decode to object");
-  }
-  return parsed;
-}
+// Runtime tools reader - uses factory from policy module
+const readRuntimeToolsOverrides = createRuntimeToolsReader(db);
 
 function safePreviewValue(value, maxChars = 12000) {
   const raw = safeJsonStringify(value);
@@ -650,7 +406,19 @@ async function runBuiltin(job, handler) {
 
     try {
       if (isOpenAiProvider && providerInput?.agent_tools === true && (!Array.isArray(providerInput.tools) || providerInput.tools.length < 1)) {
-        const autoTools = buildAgentFunctionTools(runtimeTools);
+        // Pre-compute enabled job types from database
+        const jobTypeRows = db.prepare(`SELECT name, enabled FROM job_types WHERE enabled = 1`).all();
+        const enabledJobTypes = new Set(
+          (Array.isArray(jobTypeRows) ? jobTypeRows : [])
+            .map((r) => String(r?.name || "").trim())
+            .filter(Boolean)
+        );
+        // Build agent function tools with pre-computed enabled job types
+        const autoTools = buildAgentFunctionTools({
+          enabledJobTypes,
+          isEnabledCheck: (spec, rt) => isRuntimeEnabledForAgentTool(spec, rt, getConfig),
+          runtimeTools
+        });
         if (autoTools.length > 0) {
           providerInput = {
             ...providerInput,

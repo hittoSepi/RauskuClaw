@@ -836,6 +836,10 @@ registerSchedulesRoutes(app, {
 const registerProjectRoutes = require("./routes/projects");
 registerProjectRoutes(app, { auth, db, nowIso, badRequest });
 
+// Agent Tools routes
+const registerAgentToolsRoutes = require("./routes/agent_tools");
+registerAgentToolsRoutes(app, { auth, db, nowIso, badRequest, recordMetricSafe });
+
 app.get("/v1/ui-prefs", auth, (req, res) => {
   const scope = req.query.scope ? normalizeMemoryToken(req.query.scope) : "";
   const key = req.query.key ? normalizeMemoryToken(req.query.key) : "";
